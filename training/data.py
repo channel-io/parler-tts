@@ -6,7 +6,7 @@ import datasets
 import numpy as np
 import torch
 from accelerate import Accelerator
-from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset
+from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset, Audio
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
@@ -124,10 +124,16 @@ def convert_dataset_str_to_list(
 ):
     if isinstance(dataset_names, str):
         dataset_names = dataset_names.split("+")
-        dataset_config_names = dataset_config_names.split("+")
+        if dataset_config_names is None:
+            dataset_config_names = [None] * len(dataset_names)
+        else:
+            dataset_config_names = dataset_config_names.split("+")
         splits = splits.split("+") if splits is not None else None
         dataset_samples = dataset_samples.split("+") if dataset_samples is not None else None
-        metadata_dataset_names = metadata_dataset_names.split("+") if metadata_dataset_names is not None else None
+        if metadata_dataset_names is None:
+            metadata_dataset_names = [None] * len(dataset_names)
+        else:
+            metadata_dataset_names = metadata_dataset_names.split("+")
 
     # basic checks to ensure we've got the right number of datasets/configs/splits/columns/probs
     if len(dataset_names) != len(dataset_config_names):
@@ -212,8 +218,17 @@ def load_multiple_datasets(
                 streaming=streaming,
                 **kwargs,
             )
+            
             dataset_features = dataset.features.keys()
+            
+            # Check if 'audio' column is a string and convert it to an array
+            if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
+                # Cast the 'audio' column to Audio feature
+                dataset = dataset.cast_column("audio", Audio())
 
+            if 'audio' in dataset.column_names:
+                print("First item in 'audio' column:", dataset[0]['audio'])
+            
             if sampling_rate is not None and audio_column_name is not None:
                 # resample target audio
                 dataset = dataset.cast_column(audio_column_name, datasets.features.Audio(sampling_rate=sampling_rate))
@@ -288,6 +303,12 @@ def load_multiple_datasets(
                         )
 
                 dataset_features = dataset.features.keys()
+            # else:
+            #     def add_none_description(sample):
+            #         sample['description'] = None
+            #         return sample
+                
+            #     dataset = dataset.map(add_none_description, num_proc=15, desc="Adding None Description")
 
             if columns_to_keep is not None:
                 dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))

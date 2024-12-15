@@ -1,0 +1,13 @@
+{
+    "architectures": [
+      "DACModel"
+    ],
+    "codebook_size": 1024,
+    "frame_rate": 86,
+    "latent_dim": 1024,
+    "model_bitrate": 8,
+    "model_type": "dac",
+    "num_codebooks": 9,
+    "torch_dtype": "float32",
+    "transformers_version": "4.38.0.dev0"
+}

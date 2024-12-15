@@ -242,11 +242,22 @@ class ParlerTTSConfig(PretrainedConfig):
         if "text_encoder" not in kwargs or "audio_encoder" not in kwargs or "decoder" not in kwargs:
             raise ValueError("Config has to be initialized with text_encoder, audio_encoder and decoder config")
 
-        text_encoder_config = kwargs.pop("text_encoder")
-        text_encoder_model_type = text_encoder_config.pop("model_type")
+        use_text_encoder = kwargs.pop("use_text_encoder", True)
+        use_audio_encoder = kwargs.pop("use_audio_encoder", True)
 
-        audio_encoder_config = kwargs.pop("audio_encoder")
-        audio_encoder_model_type = audio_encoder_config.pop("model_type")
+        if use_text_encoder:
+            text_encoder_config = kwargs.pop("text_encoder")
+            text_encoder_model_type = text_encoder_config.pop("model_type")
+        else:
+            text_encoder_config = None
+            text_encoder_model_type = None
+
+        if use_audio_encoder:
+            audio_encoder_config = kwargs.pop("audio_encoder")
+            audio_encoder_model_type = audio_encoder_config.pop("model_type")
+        else:
+            audio_encoder_config = None
+            audio_encoder_model_type = None
 
         model_version = kwargs.get("transformers_version", None)
         if model_version is not None and Version(model_version) <= Version("4.44.2dev") and use_dac_on_the_hub and audio_encoder_model_type=="dac":
@@ -257,8 +268,8 @@ class ParlerTTSConfig(PretrainedConfig):
 
         self.vocab_size = vocab_size
         self.prompt_cross_attention = prompt_cross_attention
-        self.text_encoder = AutoConfig.for_model(text_encoder_model_type, **text_encoder_config)
-        self.audio_encoder = AutoConfig.for_model(audio_encoder_model_type, **audio_encoder_config)
+        self.text_encoder = AutoConfig.for_model(text_encoder_model_type, **text_encoder_config) if use_text_encoder else None
+        self.audio_encoder = AutoConfig.for_model(audio_encoder_model_type, **audio_encoder_config) if use_audio_encoder else None
         self.decoder = ParlerTTSDecoderConfig(**decoder_config)
         self.is_encoder_decoder = True
 
@@ -279,8 +290,8 @@ class ParlerTTSConfig(PretrainedConfig):
         """
 
         return cls(
-            text_encoder=text_encoder_config.to_dict(),
-            audio_encoder=audio_encoder_config.to_dict(),
+            text_encoder=text_encoder_config.to_dict() if text_encoder_config is not None else None,
+            audio_encoder=audio_encoder_config.to_dict() if audio_encoder_config is not None else None,
             decoder=decoder_config.to_dict(),
             **kwargs,
         )

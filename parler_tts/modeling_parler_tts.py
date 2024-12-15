@@ -2342,12 +2342,13 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         # initialize with config
         super().__init__(config)
 
-        if text_encoder is None:
+        if config.use_text_encoder and text_encoder is None:
             from transformers.models.auto.modeling_auto import AutoModelForTextEncoding
 
             text_encoder = AutoModelForTextEncoding.from_config(config.text_encoder)
+            
 
-        if audio_encoder is None:
+        if config.use_audio_encoder and audio_encoder is None:
             from transformers.models.auto.modeling_auto import AutoModel
 
             audio_encoder = AutoModel.from_config(config.audio_encoder)
@@ -2359,12 +2360,12 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         self.audio_encoder = audio_encoder
         self.decoder = decoder
 
-        if self.text_encoder.config.to_dict() != self.config.text_encoder.to_dict():
+        if config.use_text_encoder and self.text_encoder.config.to_dict() != self.config.text_encoder.to_dict():
             logger.warning(
                 f"Config of the text_encoder: {self.text_encoder.__class__} is overwritten by shared text_encoder config:"
                 f" {self.config.text_encoder}"
             )
-        if self.audio_encoder.config.to_dict() != self.config.audio_encoder.to_dict():
+        if config.use_audio_encoder and self.audio_encoder.config.to_dict() != self.config.audio_encoder.to_dict():
             logger.warning(
                 f"Config of the audio_encoder: {self.audio_encoder.__class__} is overwritten by shared audio_encoder config:"
                 f" {self.config.audio_encoder}"
@@ -2377,19 +2378,22 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
 
         # make sure that the individual model's config refers to the shared config
         # so that the updates to the config will be synced
-        self.config.text_encoder._attn_implementation = self.text_encoder.config._attn_implementation
-        self.config.audio_encoder._attn_implementation = self.audio_encoder.config._attn_implementation
+        if config.use_text_encoder:
+            self.config.text_encoder._attn_implementation = self.text_encoder.config._attn_implementation
+            self.text_encoder.config = self.config.text_encoder
+        if config.use_audio_encoder:
+            self.config.audio_encoder._attn_implementation = self.audio_encoder.config._attn_implementation
+            self.audio_encoder.config = self.config.audio_encoder
         self.config.decoder._attn_implementation = self.decoder.config._attn_implementation
-        self.text_encoder.config = self.config.text_encoder
-        self.audio_encoder.config = self.config.audio_encoder
         self.decoder.config = self.config.decoder
 
+        if config.use_text_encoder:
         # text encoder outputs might need to be projected to different dimension for decoder
-        if (
-            self.text_encoder.config.hidden_size != self.decoder.config.hidden_size
-            and self.decoder.config.cross_attention_hidden_size is None
-        ):
-            self.enc_to_dec_proj = nn.Linear(self.text_encoder.config.hidden_size, self.decoder.config.hidden_size)
+            if (
+                self.text_encoder.config.hidden_size != self.decoder.config.hidden_size
+                and self.decoder.config.cross_attention_hidden_size is None
+            ):
+                self.enc_to_dec_proj = nn.Linear(self.text_encoder.config.hidden_size, self.decoder.config.hidden_size)
 
         # prompt embeddings
         self.embed_prompts = nn.Embedding(config.vocab_size, self.decoder.config.hidden_size)
@@ -2401,7 +2405,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
                 config.decoder.hidden_size,
             )
 
-        if self.text_encoder.get_output_embeddings() is not None:
+        if config.use_text_encoder and self.text_encoder.get_output_embeddings() is not None:
             raise ValueError(
                 f"The encoder {self.text_encoder} should not have a LM Head. Please use a model without and LM Head"
             )
@@ -2412,14 +2416,14 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
                 "The selected decoder is not prepared for the encoder hidden states to be passed. Please see the "
                 "following discussion on GitHub: https://github.com/huggingface/transformers/issues/23350"
             )
+        if config.use_audio_encoder:
+            audio_encoder_signature = set(inspect.signature(self.audio_encoder.decode).parameters.keys())
+            self.use_audio_scales = "audio_scales" in audio_encoder_signature
 
-        audio_encoder_signature = set(inspect.signature(self.audio_encoder.decode).parameters.keys())
-        self.use_audio_scales = "audio_scales" in audio_encoder_signature
-
-        self.use_4dim_audio_codes = False
-        audio_type = audio_encoder.config.model_type
-        if audio_type in {"encodec", "dac_on_the_hub"} or (audio_type == "dac" and not is_dac_integrated_to_transformers):
-            self.use_4dim_audio_codes = True 
+            self.use_4dim_audio_codes = False
+            audio_type = audio_encoder.config.model_type
+            if audio_type in {"encodec", "dac_on_the_hub"} or (audio_type == "dac" and not is_dac_integrated_to_transformers):
+                self.use_4dim_audio_codes = True 
  
         # Initialize projection and embedding layers and tie text encoder and decoder weights if set accordingly
         self.post_init()
@@ -2437,7 +2441,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
 
     def tie_weights(self):
         # tie text encoder & decoder if needed
-        if self.config.tie_encoder_decoder:
+        if self.config.use_text_encoder and self.config.tie_encoder_decoder:
             # tie text encoder and decoder base model
             decoder_base_model_prefix = self.decoder.base_model_prefix
             self._tie_encoder_decoder_weights(
@@ -2445,10 +2449,16 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             )
 
     def get_audio_encoder(self):
-        return self.audio_encoder
+        if self.config.use_audio_encoder:
+            return self.audio_encoder
+        else:
+            return None
 
     def get_text_encoder(self):
-        return self.text_encoder
+        if self.config.use_text_encoder:
+            return self.text_encoder
+        else:
+            return None
 
     def get_encoder(self):
         # get the text encoder to compute the encoder hidden-states for generation
@@ -2493,6 +2503,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         text_encoder_pretrained_model_name_or_path: str = None,
         audio_encoder_pretrained_model_name_or_path: str = None,
         decoder_pretrained_model_name_or_path: str = None,
+        use_text_encoder: bool = True,
+        use_audio_encoder: bool = True,
         *model_args,
         **kwargs,
     ) -> PreTrainedModel:
@@ -2571,6 +2583,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             if argument.startswith("text_encoder_")
         }
 
+
         kwargs_audio_encoder = {
             argument[len("audio_encoder_") :]: value
             for argument, value in kwargs.items()
@@ -2588,63 +2601,78 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             del kwargs["audio_encoder_" + key]
         for key in kwargs_decoder.keys():
             del kwargs["decoder_" + key]
+            
+        kwargs["use_text_encoder"] = use_text_encoder
+        kwargs["use_audio_encoder"] = use_audio_encoder
 
         # Load and initialize the encoder and decoder
-        # The distinction between encoder and decoder at the model level is made
-        # by the value of the flag `is_decoder` that we need to set correctly.
-        text_encoder = kwargs_text_encoder.pop("model", None)
-        if text_encoder is None:
-            if text_encoder_pretrained_model_name_or_path is None:
-                raise ValueError(
-                    "If `text_encoder_model` is not defined as an argument, a `text_encoder_pretrained_model_name_or_path` has "
-                    "to be defined."
-                )
-
-            if "config" not in kwargs_text_encoder:
-                encoder_config, kwargs_text_encoder = AutoConfig.from_pretrained(
-                    text_encoder_pretrained_model_name_or_path, **kwargs_text_encoder, return_unused_kwargs=True
-                )
-
-                if encoder_config.is_decoder is True or encoder_config.add_cross_attention is True:
-                    logger.info(
-                        f"Initializing {text_encoder_pretrained_model_name_or_path} as a text_encoder model "
-                        "from a decoder model. Cross-attention and casual mask are disabled."
+        text_encoder = None
+        if use_text_encoder:
+            text_encoder = kwargs_text_encoder.pop("model", None)
+            if text_encoder is None:
+                if text_encoder_pretrained_model_name_or_path is None:
+                    raise ValueError(
+                        "If `text_encoder_model` is not defined as an argument, a `text_encoder_pretrained_model_name_or_path` has "
+                        "to be defined."
                     )
-                    encoder_config.is_decoder = False
-                    encoder_config.add_cross_attention = False
 
-                kwargs_text_encoder["config"] = encoder_config
-
-            text_encoder = AutoModelForTextEncoding.from_pretrained(
-                text_encoder_pretrained_model_name_or_path, *model_args, **kwargs_text_encoder
-            )
-
-        audio_encoder = kwargs_audio_encoder.pop("model", None)
-        if audio_encoder is None:
-            if audio_encoder_pretrained_model_name_or_path is None:
-                raise ValueError(
-                    "If `audio_encoder_model` is not defined as an argument, an `audio_encoder_pretrained_model_name_or_path` has "
-                    "to be defined."
-                )
-
-            if "config" not in kwargs_audio_encoder:
-                encoder_config, kwargs_audio_encoder = AutoConfig.from_pretrained(
-                    audio_encoder_pretrained_model_name_or_path, **kwargs_audio_encoder, return_unused_kwargs=True
-                )
-
-                if encoder_config.is_decoder is True or encoder_config.add_cross_attention is True:
-                    logger.info(
-                        f"Initializing {audio_encoder_pretrained_model_name_or_path} as an audio_encoder model "
-                        "from a decoder model. Cross-attention and casual mask are disabled."
+                if "config" not in kwargs_text_encoder:
+                    encoder_config, kwargs_text_encoder = AutoConfig.from_pretrained(
+                        text_encoder_pretrained_model_name_or_path, **kwargs_text_encoder, return_unused_kwargs=True
                     )
-                    encoder_config.is_decoder = False
-                    encoder_config.add_cross_attention = False
 
-                kwargs_audio_encoder["config"] = encoder_config
+                    if encoder_config.is_decoder is True or encoder_config.add_cross_attention is True:
+                        logger.info(
+                            f"Initializing {text_encoder_pretrained_model_name_or_path} as a text_encoder model "
+                            "from a decoder model. Cross-attention and casual mask are disabled."
+                        )
+                        encoder_config.is_decoder = False
+                        encoder_config.add_cross_attention = False
 
-            audio_encoder = AutoModel.from_pretrained(
-                audio_encoder_pretrained_model_name_or_path, *model_args, **kwargs_audio_encoder
-            )
+                    kwargs_text_encoder["config"] = encoder_config
+
+                text_encoder = AutoModelForTextEncoding.from_pretrained(
+                    text_encoder_pretrained_model_name_or_path, *model_args, **kwargs_text_encoder
+                )
+
+        audio_encoder = None
+        if use_audio_encoder:
+            audio_encoder = kwargs_audio_encoder.pop("model", None)
+            if audio_encoder is None:
+                if audio_encoder_pretrained_model_name_or_path is None:
+                    raise ValueError(
+                        "If `audio_encoder_model` is not defined as an argument, an `audio_encoder_pretrained_model_name_or_path` has "
+                        "to be defined."
+                    )
+
+                if "config" not in kwargs_audio_encoder:
+                    if audio_encoder_pretrained_model_name_or_path == "parler-tts/dac_44khZ_8kbps":
+                        encoder_config, kwargs_audio_encoder = DACConfig.from_pretrained(
+                            audio_encoder_pretrained_model_name_or_path, **kwargs_audio_encoder, return_unused_kwargs=True
+                        )
+                    else:
+                        encoder_config, kwargs_audio_encoder = AutoConfig.from_pretrained(
+                            audio_encoder_pretrained_model_name_or_path, **kwargs_audio_encoder, return_unused_kwargs=True
+                        )
+
+                    if encoder_config.is_decoder is True or encoder_config.add_cross_attention is True:
+                        logger.info(
+                            f"Initializing {audio_encoder_pretrained_model_name_or_path} as an audio_encoder model "
+                            "from a decoder model. Cross-attention and casual mask are disabled."
+                        )
+                        encoder_config.is_decoder = False
+                        encoder_config.add_cross_attention = False
+
+                    kwargs_audio_encoder["config"] = encoder_config
+
+                if audio_encoder_pretrained_model_name_or_path == "parler-tts/dac_44khZ_8kbps":
+                    audio_encoder = DACModel.from_pretrained(
+                        audio_encoder_pretrained_model_name_or_path, *model_args, **kwargs_audio_encoder
+                    )
+                else:
+                    audio_encoder = AutoModel.from_pretrained(
+                        audio_encoder_pretrained_model_name_or_path, *model_args, **kwargs_audio_encoder
+                    )
 
         decoder = kwargs_decoder.pop("model", None)
         if decoder is None:
@@ -2686,7 +2714,10 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
 
         # instantiate config with corresponding kwargs
         config = ParlerTTSConfig.from_sub_models_config(
-            text_encoder.config, audio_encoder.config, decoder.config, **kwargs
+            text_encoder.config if text_encoder else None,
+            audio_encoder.config if audio_encoder else None,
+            decoder.config,
+            **kwargs
         )
         return cls(text_encoder=text_encoder, audio_encoder=audio_encoder, decoder=decoder, config=config)
 
@@ -2766,7 +2797,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             if prompt_input_ids is not None:
                 prompt_hidden_states = self.embed_prompts(prompt_input_ids)
 
-        if encoder_outputs is None:
+        if self.config.use_text_encoder and encoder_outputs is None:
             encoder_outputs = self.text_encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -3309,14 +3340,16 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         return self._cache
 
     def freeze_encoders(self, freeze_text_encoder=True):
-        if freeze_text_encoder:
-            for param in self.text_encoder.parameters():
-                param.requires_grad = False
-            self.text_encoder._requires_grad = False
+        if self.config.use_text_encoder:
+            if freeze_text_encoder:
+                for param in self.text_encoder.parameters():
+                    param.requires_grad = False
+                self.text_encoder._requires_grad = False
 
-        for param in self.audio_encoder.parameters():
-            param.requires_grad = False
-        self.audio_encoder._requires_grad = False
+        if self.config.use_audio_encoder:
+            for param in self.audio_encoder.parameters():
+                param.requires_grad = False
+            self.audio_encoder._requires_grad = False
 
     @torch.no_grad()
     def generate(

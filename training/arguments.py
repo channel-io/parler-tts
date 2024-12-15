@@ -105,7 +105,14 @@ class DataTrainingArguments:
     into argparse arguments to be able to specify them on
     the command line.
     """
-
+    
+    use_auth_token: str = field(
+        default=None,
+        metadata={
+            "help": "The token to use as HTTP bearer authorization for remote files. If not specified, will use the token "
+            "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
+        },
+    )
     train_dataset_name: str = field(
         default=None,
         metadata={
@@ -291,12 +298,22 @@ class DataTrainingArguments:
     id_column_name: str = field(default=None, metadata={"help": "id column name."})
     wandb_project: str = field(
         default="parler-speech",
-        metadata={"help": "The name of the wandb project."},
+        metadata={"help": "The name of the wandb project. Only used when logging_platform='wandb'"},
     )
     wandb_run_name: str = field(
         default=None,
         metadata={
-            "help": "If specified, the name of the run. If not specified, wandb will give a random name to this run."
+            "help": "If specified, the name of the wandb run. If not specified, wandb will give a random name to this run. Only used when logging_platform='wandb'"
+        },
+    )
+    mlflow_project: str = field(
+        default="parler-speech",
+        metadata={"help": "The name of the MLflow project. Only used when logging_platform='mlflow'"},
+    )
+    mlflow_run_id: str = field(
+        default=None,
+        metadata={
+            "help": "If specified, the name of the MLflow run. If not specified, MLflow will give a random name to this run. Only used when logging_platform='mlflow'"
         },
     )
     save_to_disk: str = field(

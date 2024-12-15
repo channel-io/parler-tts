@@ -5,6 +5,8 @@ from transformers import AutoConfig
 
 from parler_tts import ParlerTTSDecoderConfig, ParlerTTSForCausalLM, ParlerTTSForConditionalGeneration
 
+from parler_tts.dac_wrapper.modeling_dac import DACConfig
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -18,7 +20,9 @@ if __name__ == "__main__":
     encodec_version = args.audio_model
 
     t5 = AutoConfig.from_pretrained(text_model)
-    encodec = AutoConfig.from_pretrained(encodec_version)
+    encodec = DACConfig.from_pretrained(encodec_version)
+    
+    
 
     encodec_vocab_size = encodec.codebook_size
     num_codebooks = encodec.num_codebooks
@@ -45,7 +49,7 @@ if __name__ == "__main__":
 
     decoder = ParlerTTSForCausalLM(decoder_config)
     decoder.save_pretrained(os.path.join(args.save_directory, "decoder"))
-
+    
     model = ParlerTTSForConditionalGeneration.from_sub_models_pretrained(
         text_encoder_pretrained_model_name_or_path=text_model,
         audio_encoder_pretrained_model_name_or_path=encodec_version,
@@ -65,4 +69,8 @@ if __name__ == "__main__":
     model.config.pad_token_id = encodec_vocab_size
     model.config.decoder_start_token_id = encodec_vocab_size + 1
 
+    # Print the number of parameters in the model in millions
+    num_parameters = model.num_parameters()
+    print(f"Number of parameters in the model: {num_parameters / 1_000_000:.2f}M")
+    
     model.save_pretrained(os.path.join(args.save_directory, "parler-tts-untrained-600M/"))

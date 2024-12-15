@@ -110,7 +110,6 @@ def main():
 
     ####### A. Preparation
     kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(minutes=120)), DistributedDataParallelKwargs(find_unused_parameters=False)]
-
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         mixed_precision=mixed_precision,
@@ -119,8 +118,18 @@ def main():
         kwargs_handlers=kwargs_handlers,
     )
 
+    init_kwargs = {}
+    if "mlflow" in training_args.report_to:
+        project_name = data_args.mlflow_project
+        init_kwargs["mlflow"] = {"run_id": data_args.mlflow_run_id} if data_args.mlflow_run_id else {}
+    elif "wandb" in training_args.report_to:
+        project_name = data_args.wandb_project
+        init_kwargs["wandb"] = {"name": data_args.wandb_run_name} if data_args.wandb_run_name else {}
+    else:
+        raise ValueError(f"Unsupported logging platform: {training_args.report_to}")
+        
     accelerator.init_trackers(
-        project_name=data_args.wandb_project,
+        project_name=project_name,
         config={
             "learning_rate": training_args.learning_rate,
             "model_name_or_path": model_args.model_name_or_path,
@@ -138,7 +147,7 @@ def main():
             "adam_beta2": training_args.adam_beta2,
             "temperature": model_args.temperature,
         },
-        init_kwargs={"wandb": {"name": data_args.wandb_run_name}} if data_args.wandb_run_name else {},
+        init_kwargs=init_kwargs,
     )
 
     # Detecting last checkpoint and eventually continue from last checkpoint
@@ -291,6 +300,7 @@ def main():
                 audio_column_name=data_args.target_audio_column_name,
                 sampling_rate=sampling_rate,
                 logger=logger,
+                use_auth_token=data_args.use_auth_token,
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
 
@@ -387,20 +397,23 @@ def main():
 
         # Preprocessing the dataset.
         # We need to tokenize the texts.
-        def pass_through_processors(description, prompt):
+        def pass_through_processors(prompt, description=None):
             batch = {}
 
-            batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
+            if description is not None:
+                batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
+                
             batch["prompt_input_ids"] = prompt_tokenizer(prompt.strip())["input_ids"]
 
             return batch
 
         with accelerator.local_main_process_first():
             # this is a trick to avoid to rewrite the entire audio column which takes ages
+            input_columns = [description_column_name, prompt_column_name] if description_column_name is not None else [prompt_column_name]
             vectorized_datasets = raw_datasets.map(
                 pass_through_processors,
                 remove_columns=next(iter(raw_datasets.values())).column_names,
-                input_columns=[description_column_name, prompt_column_name],
+                input_columns=input_columns,
                 num_proc=num_workers,
                 desc="preprocess datasets",
             )
