@@ -1,6 +1,8 @@
 compute_environment: LOCAL_MACHINE
 debug: true
 deepspeed_config:
+ deepspeed_hostfile: helpers/multinode/hostfile
+ deepspeed_multinode_launcher: pdsh
  deepspeed_config_file: helpers/multinode/deepspeed_config_zero2.json
  zero3_init_flag: false
 distributed_type: DEEPSPEED

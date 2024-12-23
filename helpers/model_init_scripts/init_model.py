@@ -42,7 +42,7 @@ if __name__ == "__main__":
         print('tokenizer_vocab_size', tokenizer_vocab_size)
         
         # Add new tokens
-        new_tokens = ["[male]", "[female]"]
+        new_tokens = ["[male]", "[female]", "[unknown_age]", "[unknown_gender]"]
         
         # Add [10s] to [100s] tokens in increments of 10
         new_tokens.extend([f"[{i}s]" for i in range(10, 101, 10)])

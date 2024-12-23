@@ -442,7 +442,17 @@ def main():
             if description is not None:
                 batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
                 
-            batch["prompt_input_ids"] = prompt_tokenizer(f"{speaker} {gender} {age} {prompt.strip()}")["input_ids"]
+            prefix = ""
+            if gender is not None:
+                prefix += gender
+            if age is not None:
+                prefix += ' ' + age
+            prefix = prefix.strip()
+            
+            if prefix != "":
+                batch["prompt_input_ids"] = prompt_tokenizer(f"{prefix} {prompt.strip()}")["input_ids"]
+            else:
+                batch["prompt_input_ids"] = prompt_tokenizer(f"{prompt.strip()}")["input_ids"]
             
             # print('with meta', prompt_tokenizer(f"{speaker} {gender} {age} {prompt.strip()}")["input_ids"])
             # print('original', prompt_tokenizer(prompt.strip())["input_ids"])

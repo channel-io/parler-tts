@@ -250,7 +250,7 @@ def load_multiple_datasets(
                 if isinstance(dataset, IterableDataset):
                     dataset = dataset.map(process_audio, desc="Loading audio", streaming=streaming)
                 else:
-                    dataset = dataset.map(process_audio, num_proc=24, desc="Loading audio")
+                    dataset = dataset.map(process_audio, num_proc=62, desc="Loading audio")
 
             if 'audio' in dataset.column_names:
                 print("First item in 'audio' column:", dataset[0]['audio'])
