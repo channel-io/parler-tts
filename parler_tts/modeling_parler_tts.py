@@ -2846,7 +2846,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         elif isinstance(encoder_outputs, tuple):
             encoder_outputs = BaseModelOutput(*encoder_outputs)
 
-        encoder_hidden_states = encoder_outputs.last_hidden_state
+        encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs is not None else None
 
         if (labels is not None) and (decoder_input_ids is None and decoder_inputs_embeds is None):
             decoder_input_ids = shift_tokens_right(
@@ -2904,9 +2904,9 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state if encoder_outputs is not None else None,
+            encoder_hidden_states=encoder_outputs.hidden_states if encoder_outputs is not None else None,
+            encoder_attentions=encoder_outputs.attentions if encoder_outputs is not None else None,
             per_codebook_losses=decoder_outputs.per_codebook_losses,
         )
 
@@ -3083,6 +3083,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         model_input_name: Optional[str],
         generation_config: GenerationConfig,
     ) -> Dict[str, Any]:
+        if not self.config.use_text_encoder:
+            return model_kwargs
         # 1. get text encoder
         encoder = self.get_text_encoder()
         # Compatibility with Accelerate big model inference: we need the encoder to outputs stuff on the same device

@@ -1,0 +1,18 @@
+compute_environment: LOCAL_MACHINE
+debug: true
+deepspeed_config:
+ deepspeed_hostfile: helpers/multinode/hostfile
+ deepspeed_multinode_launcher: pdsh
+ deepspeed_config_file: helpers/multinode/deepspeed_config_zero2.json
+ zero3_init_flag: false
+distributed_type: DEEPSPEED
+fsdp_config: {}
+machine_rank: 0
+main_process_ip: main1
+main_process_port: 29500
+rdzv_backend: static
+same_network: true
+main_training_function: main
+num_machines: 4
+num_processes: 16
+use_cpu: false

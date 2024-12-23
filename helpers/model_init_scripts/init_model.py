@@ -39,9 +39,10 @@ if __name__ == "__main__":
     if args.tokenizer_model is not None:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_model, token=args.token)
         tokenizer_vocab_size = tokenizer.vocab_size
+        print('tokenizer_vocab_size', tokenizer_vocab_size)
         
         # Add new tokens
-        new_tokens = ["[parler_tts_eos]", "[parler_tts_bos]", "[male]", "[female]"]
+        new_tokens = ["[male]", "[female]"]
         
         # Add [10s] to [100s] tokens in increments of 10
         new_tokens.extend([f"[{i}s]" for i in range(10, 101, 10)])
@@ -51,13 +52,7 @@ if __name__ == "__main__":
         new_tokens.extend(additional_tokens)
         tokenizer.add_tokens(new_tokens)
         
-        vocab_size = tokenizer.vocab_size
-        original_vocab_size = tokenizer_vocab_size
-        pad_token_id = tokenizer.convert_tokens_to_ids("[parler_tts_eos]") if tokenizer is not None else original_vocab_size
-        eos_token_id = tokenizer.convert_tokens_to_ids("[parler_tts_eos]") if tokenizer is not None else original_vocab_size
-        bos_token_id = tokenizer.convert_tokens_to_ids("[parler_tts_bos]") if tokenizer is not None else original_vocab_size
-        
-    vocab_size = vocab_size + args.additional_token_num
+    vocab_size = len(tokenizer)
         
     decoder_config = ParlerTTSDecoderConfig(
         vocab_size=encodec_vocab_size + 64,  # + 64 instead of +1 to have a multiple of 64

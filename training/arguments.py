@@ -113,6 +113,13 @@ class DataTrainingArguments:
             "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
         },
     )
+    streaming: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use streaming mode. If not specified, will use the token "
+            "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
+        },
+    )
     train_dataset_name: str = field(
         default=None,
         metadata={

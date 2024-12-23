@@ -86,17 +86,23 @@ class DataCollatorParlerTTSWithPadding:
                 labels, pad=(0, 0, 0, max(self.audio_max_length - labels.shape[1], 0)), value=-100
             )
 
-        input_ids = [{"input_ids": feature["input_ids"]} for feature in features]
+        if "input_ids" in features[0]:
+            input_ids = [{"input_ids": feature["input_ids"]} for feature in features]
+        else:
+            input_ids = None
 
-        input_ids = self.description_tokenizer.pad(
-            input_ids,
-            return_tensors="pt",
-            padding=self.padding,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            max_length=self.description_max_length,
-        )
+        if input_ids is not None:
+            input_ids = self.description_tokenizer.pad(
+                input_ids,
+                return_tensors="pt",
+                padding=self.padding,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                max_length=self.description_max_length,
+            )
 
-        batch = {"labels": labels, **input_ids}
+            batch = {"labels": labels, **input_ids}
+        else:
+            batch = {"labels": labels, "input_ids": None, "attention_mask": None}
 
         prompt_input_ids = [{"input_ids": feature["prompt_input_ids"]} for feature in features]
         prompt_input_ids = self.prompt_tokenizer.pad(
@@ -206,6 +212,10 @@ def load_multiple_datasets(
         probabilities = np.array(dataset_samples) / np.sum(dataset_samples)
     else:
         probabilities = None
+        
+    if streaming and 'num_proc' in kwargs:
+        # kwargs['num_workers'] = kwargs['num_proc']
+        del kwargs['num_proc']
 
     all_datasets = []
     # iterate over the datasets we want to interleave
@@ -222,9 +232,25 @@ def load_multiple_datasets(
             dataset_features = dataset.features.keys()
             
             # Check if 'audio' column is a string and convert it to an array
-            if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
-                # Cast the 'audio' column to Audio feature
-                dataset = dataset.cast_column("audio", Audio())
+            # if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
+            #     # Cast the 'audio' column to Audio feature
+            #     dataset = dataset.cast_column("audio", Audio())
+            
+            if 'audio' in dataset.column_names:
+                import soundfile as sf
+                
+                def process_audio(batch):
+                    if isinstance(batch['audio'][0], str):
+                        array, sr = sf.read(batch["audio"])
+                        batch["audio"] = array
+                        batch["sampling_rate"] = sr
+                    return batch
+
+                # TODO(SG): IterableDataset이 병렬 처리가 안됨
+                if isinstance(dataset, IterableDataset):
+                    dataset = dataset.map(process_audio, desc="Loading audio", streaming=streaming)
+                else:
+                    dataset = dataset.map(process_audio, num_proc=24, desc="Loading audio")
 
             if 'audio' in dataset.column_names:
                 print("First item in 'audio' column:", dataset[0]['audio'])
