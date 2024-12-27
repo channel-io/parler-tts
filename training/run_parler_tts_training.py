@@ -139,12 +139,13 @@ def main():
     padding = "max_length" if data_args.pad_to_max_length else "longest"
 
     ####### A. Preparation
-    kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(minutes=120)), DistributedDataParallelKwargs(find_unused_parameters=True)]
+    kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(minutes=10000000)), DistributedDataParallelKwargs(find_unused_parameters=True)]
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         mixed_precision=mixed_precision,
         log_with=training_args.report_to,
         project_dir=training_args.output_dir,
+        device_placement=True,
         kwargs_handlers=kwargs_handlers,
     )
 
@@ -270,7 +271,7 @@ def main():
     # assume that the dataset has been saved to `save_to_disk` if the latter is not empty
     dataset_was_precomputed = len(os.listdir(data_args.save_to_disk)) > 0
     if dataset_was_precomputed:
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             vectorized_datasets = datasets.load_from_disk(data_args.save_to_disk)
     else:
         raw_datasets = DatasetDict()
@@ -304,6 +305,7 @@ def main():
                 sampling_rate=sampling_rate,
                 logger=logger,
                 streaming=data_args.streaming, # TODO(SG): optionally enable streaming mode
+                sharded=data_args.sharded,
             )
 
             for key in columns_to_keep:
@@ -339,7 +341,7 @@ def main():
             )
 
             if data_args.max_eval_samples is not None:
-                with accelerator.local_main_process_first():
+                with accelerator.main_process_first():
                     raw_datasets["eval"] = (
                         raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
                     )
@@ -424,7 +426,7 @@ def main():
     if not dataset_was_precomputed:
         # Filter on text length
         if description_column_name is not None and data_args.max_text_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 raw_datasets = raw_datasets.filter(
                     lambda x: len(x) < data_args.max_text_length,
@@ -459,7 +461,7 @@ def main():
 
             return batch
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # this is a trick to avoid to rewrite the entire audio column which takes ages
             input_columns = [description_column_name, prompt_column_name, 'speaker', 'gender', 'age'] if description_column_name is not None else [prompt_column_name, 'speaker', 'gender', 'age']
             vectorized_datasets = raw_datasets.map(
@@ -622,7 +624,7 @@ def main():
             del all_generated_labels
             accelerator.wait_for_everyone()
 
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 tmp_labels = load_all_codec_checkpoints(os.path.join(data_args.temporary_save_to_disk, split)).select(
                     range(len(vectorized_datasets[split]))
                 )
@@ -632,7 +634,7 @@ def main():
         accelerator.free_memory()
         del generate_labels, all_lens
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # NOTE: filtering is done at the end because in the `datasets` library, caching audio files is done after most operations
             # caching audio files is time and disk-space consuming, so we want to avoid it at all costs, especially for large (>1Kh) audio datasets.
             # That's also why we avoid to concat the processed datasets (vectorized_datasets) with the audio column present in raw_datasets.
@@ -648,7 +650,7 @@ def main():
             )
 
         if description_column_name is not None and data_args.max_description_token_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 vectorized_datasets = vectorized_datasets.filter(
                     lambda x: len(x) < data_args.max_description_token_length,
@@ -657,7 +659,7 @@ def main():
                 )
 
         if data_args.max_prompt_token_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 vectorized_datasets = vectorized_datasets.filter(
                     lambda x: len(x) < data_args.max_prompt_token_length,
@@ -677,7 +679,7 @@ def main():
     audio_max_length = None
     if padding == "max_length":
         audio_max_length = max(vectorized_datasets["train"]["target_length"])
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             max_sample = vectorized_datasets["train"].filter(
                 lambda x: x == audio_max_length,
                 num_proc=num_workers,
@@ -686,7 +688,7 @@ def main():
         audio_max_length = max([len(l[0]) for l in max_sample["labels"]])
 
     if description_column_name is not None and data_args.max_description_token_length is not None:
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # filter description that is shorter than max_text_length
             vectorized_datasets = vectorized_datasets.filter(
                 lambda x: len(x) < data_args.max_description_token_length,
@@ -695,7 +697,7 @@ def main():
             )
 
     if data_args.max_prompt_token_length is not None:
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # filter description that is shorter than max_text_length
             vectorized_datasets = vectorized_datasets.filter(
                 lambda x: len(x) < data_args.max_prompt_token_length,
@@ -708,7 +710,7 @@ def main():
         def add_target_lengths(target_length, prompt, description=[]):
             return {"target_length": target_length + len(prompt) + len(description)}
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             input_columns=["target_length", "prompt_input_ids", "input_ids"] if description_column_name is not None else ["target_length", "prompt_input_ids"]
             vectorized_datasets = vectorized_datasets.map(
                 add_target_lengths,
@@ -929,7 +931,7 @@ def main():
         steps_trained_progress_bar.update(cur_step)
 
         for epoch in range(0, epochs_trained):
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
 
         if training_args.max_steps < 0:
@@ -940,7 +942,7 @@ def main():
             # So we just shuffle the dataset one extra time and start from a fresh epoch
             # This is "good enough" for our purposes but not fully correct
             resume_step = None
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
     else:
         resume_step = None
@@ -1068,7 +1070,7 @@ def main():
 
     total_batched_samples = resume_step if resume_step is not None else 0
     for epoch in range(epochs_trained, num_epochs):
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
         sampler = None
         if training_args.group_by_length:

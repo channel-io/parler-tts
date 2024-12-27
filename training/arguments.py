@@ -120,6 +120,12 @@ class DataTrainingArguments:
             "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
         },
     )
+    sharded: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use sharded mode."
+        },
+    )
     train_dataset_name: str = field(
         default=None,
         metadata={
