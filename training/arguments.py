@@ -314,6 +314,7 @@ class DataTrainingArguments:
         default=2,
         metadata={"help": ("Pad to multiple of for tokenizers.")},
     )
+    temporary_save_to_hf: Optional[str] = field(default=None, metadata={"help": "Temporarily save audio labels on huggingface hub."})
 
 
 @dataclass

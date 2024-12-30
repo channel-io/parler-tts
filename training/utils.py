@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
-from datasets import concatenate_datasets, load_from_disk
+from datasets import concatenate_datasets, load_from_disk, load_dataset
+from datasets.exceptions import DatasetNotFoundError
 from wandb import Audio
-from datasets import load_from_disk, concatenate_datasets
 
 
 def list_field(default=None, metadata=None):
@@ -17,7 +17,7 @@ def list_field(default=None, metadata=None):
 
 _RE_CHECKPOINT = re.compile(r"^checkpoint-(\d+)-epoch-(\d+)$")
 CHECKPOINT_CODEC_PREFIX = "checkpoint"
-_RE_CODEC_CHECKPOINT = re.compile(r"^checkpoint-(\d+)$")
+_RE_CODEC_CHECKPOINT = re.compile(r"^checkpoint_(\d+)$")
 
 
 def get_last_checkpoint(folder):
@@ -64,10 +64,17 @@ def rotate_checkpoints(save_total_limit=None, output_dir=None, checkpoint_prefix
         shutil.rmtree(checkpoint, ignore_errors=True)
 
 
-def save_codec_checkpoint(output_dir, dataset, step):
-    checkpoint_path = f"{CHECKPOINT_CODEC_PREFIX}-{step}"
-    output_path = os.path.join(output_dir, checkpoint_path)
+def save_codec_checkpoint(output_dir, split, dataset, step, temporary_save_to_hf=None):
+    checkpoint_path = f"{CHECKPOINT_CODEC_PREFIX}_{step}"
+    output_path = os.path.join(output_dir, split, checkpoint_path)
     dataset.save_to_disk(output_path)
+    if temporary_save_to_hf is not None:
+        dataset.push_to_hub(
+            temporary_save_to_hf,
+            split=f"{split}_{checkpoint_path}",
+            private=True,
+        )
+        shutil.rmtree(output_path, ignore_errors=True)
 
 
 def load_codec_checkpoint(checkpoint_path):
@@ -79,10 +86,10 @@ def sorted_codec_checkpoints(output_dir=None) -> List[str]:
     """Helper function to sort saved checkpoints from oldest to newest."""
     ordering_and_checkpoint_path = []
 
-    glob_checkpoints = [str(x) for x in Path(output_dir).glob(f"{CHECKPOINT_CODEC_PREFIX}-*")]
+    glob_checkpoints = [str(x) for x in Path(output_dir).glob(f"{CHECKPOINT_CODEC_PREFIX}_*")]
 
     for path in glob_checkpoints:
-        regex_match = re.match(f".*{CHECKPOINT_CODEC_PREFIX}-([0-9]+)", path)
+        regex_match = re.match(f".*{CHECKPOINT_CODEC_PREFIX}_([0-9]+)", path)
         if regex_match is not None and regex_match.groups() is not None:
             ordering_and_checkpoint_path.append((int(regex_match.groups()[0]), path))
 
@@ -91,28 +98,45 @@ def sorted_codec_checkpoints(output_dir=None) -> List[str]:
     return checkpoints_sorted
 
 
-def load_all_codec_checkpoints(output_dir=None) -> List[str]:
+def load_all_codec_checkpoints(output_dir=None, split=None, temporary_save_to_hf=None) -> List[str]:
     """Helper function to load and concat all checkpoints."""
-    checkpoints_sorted = sorted_codec_checkpoints(output_dir=output_dir)
-    datasets = [load_from_disk(checkpoint) for checkpoint in checkpoints_sorted]
-    datasets = concatenate_datasets(datasets, axis=0)
+    if temporary_save_to_hf is not None:
+        datasets = load_dataset(temporary_save_to_hf)
+        checkpoints_sorted = sorted(filter(lambda checkpoint: checkpoint.startswith(split), list(datasets.keys())), key=lambda checkpoint: int(_RE_CODEC_CHECKPOINT.search(re.sub(split + "_", "", checkpoint)).groups()[0]))
+        datasets = concatenate_datasets([datasets[checkpoint] for checkpoint in checkpoints_sorted], axis=0)
+    else:
+        checkpoints_sorted = sorted_codec_checkpoints(output_dir=os.path.join(output_dir, split))
+        datasets = [load_from_disk(checkpoint) for checkpoint in checkpoints_sorted]
+        datasets = concatenate_datasets(datasets, axis=0)
     return datasets
 
 
-def get_last_codec_checkpoint_step(folder) -> int:
-    if not os.path.exists(folder) or not os.path.isdir(folder):
-        os.makedirs(folder, exist_ok=True)
-        return 0
-    content = os.listdir(folder)
-    checkpoints = [path for path in content if _RE_CODEC_CHECKPOINT.search(path) is not None]
-    if len(checkpoints) == 0:
-        return 0
-    last_checkpoint = os.path.join(
-        folder, max(checkpoints, key=lambda x: int(_RE_CODEC_CHECKPOINT.search(x).groups()[0]))
-    )
-    # Find num steps saved state string pattern
-    pattern = r"checkpoint-(\d+)"
-    match = re.search(pattern, last_checkpoint)
+def get_last_codec_checkpoint_step(folder, split, temporary_save_to_hf=None) -> int:
+    if temporary_save_to_hf is not None:
+        try:
+            ds = load_dataset(temporary_save_to_hf)
+        except DatasetNotFoundError:
+            return 0
+        checkpoints_sorted = sorted(filter(lambda checkpoint: checkpoint.startswith(split), list(ds.keys())), key=lambda checkpoint: int(_RE_CODEC_CHECKPOINT.search(re.sub(split + "_", "", checkpoint)).groups()[0]))
+        if len(checkpoints_sorted) == 0:
+            return 0
+        last_checkpoint = max(checkpoints_sorted, key=lambda x: int(_RE_CODEC_CHECKPOINT.search(re.sub(split + "_", "", x)).groups()[0]))
+        match = re.search(_RE_CODEC_CHECKPOINT, re.sub(split + "_", "", last_checkpoint))
+    else:
+        checkpoint_dir = os.path.join(folder, split)
+        if not os.path.exists(checkpoint_dir) or not os.path.isdir(checkpoint_dir):
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            return 0
+        content = os.listdir(checkpoint_dir)
+        checkpoints = [path for path in content if _RE_CODEC_CHECKPOINT.search(path) is not None]
+        if len(checkpoints) == 0:
+            return 0
+        last_checkpoint = os.path.join(
+            checkpoint_dir, max(checkpoints, key=lambda x: int(_RE_CODEC_CHECKPOINT.search(x).groups()[0]))
+        )
+        # Find num steps saved state string pattern
+        pattern = r"checkpoint-(\d+)"
+        match = re.search(pattern, last_checkpoint)
     cur_step = int(match.group(1))
     return cur_step
 

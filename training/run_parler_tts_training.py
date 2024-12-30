@@ -496,7 +496,7 @@ def main():
             data_loader = accelerator.prepare(data_loader)
             total_inference_steps = len(data_loader)
 
-            start_step = get_last_codec_checkpoint_step(os.path.join(data_args.temporary_save_to_disk, split))
+            start_step = get_last_codec_checkpoint_step(data_args.temporary_save_to_disk, split, data_args.temporary_save_to_hf)
             accelerator.wait_for_everyone()
             if start_step > 0:
                 logger.info(f"Resuming {split} from step {start_step}")
@@ -533,7 +533,7 @@ def main():
                                 desc="Postprocessing labeling",
                             )
                             save_codec_checkpoint(
-                                os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step
+                                data_args.temporary_save_to_disk, split, tmp_labels, cur_step, data_args.temporary_save_to_hf
                             )
                             all_generated_labels = []
                             all_lens = []
@@ -548,7 +548,7 @@ def main():
                     input_columns=["labels"],
                     desc="Postprocessing labeling",
                 )
-                save_codec_checkpoint(os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step)
+                save_codec_checkpoint(data_args.temporary_save_to_disk, split, tmp_labels, cur_step, data_args.temporary_save_to_hf)
                 all_generated_labels = []
                 all_lens = []
             accelerator.wait_for_everyone()
@@ -557,7 +557,7 @@ def main():
             accelerator.wait_for_everyone()
 
             with accelerator.local_main_process_first():
-                tmp_labels = load_all_codec_checkpoints(os.path.join(data_args.temporary_save_to_disk, split)).select(
+                tmp_labels = load_all_codec_checkpoints(data_args.temporary_save_to_disk, split, data_args.temporary_save_to_hf).select(
                     range(len(vectorized_datasets[split]))
                 )
                 logger.info(f"Concatenating {split}: {tmp_labels} with {vectorized_datasets[split]}")
