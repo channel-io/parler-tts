@@ -69,7 +69,7 @@ from training.utils import (
     get_last_codec_checkpoint_step,
 )
 from training.arguments import ModelArguments, DataTrainingArguments, ParlerTTSTrainingArguments
-from training.data import load_multiple_datasets, DataCollatorParlerTTSWithPadding, DataCollatorEncodecWithPadding
+from training.data import load_multiple_datasets, DataCollatorParlerTTSWithPadding, DataCollatorEncodecWithPadding, DynamicSizeBatchSampler
 from training.eval import clap_similarity, wer, si_sdr
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ def main():
         mixed_precision=mixed_precision,
         log_with=training_args.report_to,
         project_dir=training_args.output_dir,
-        device_placement=True,
+        even_batches=training_args.dynamic_batch_size_map is None,
         kwargs_handlers=kwargs_handlers,
     )
 
@@ -781,8 +781,13 @@ def main():
 
         return results, texts, prompts, audios, transcriptions, si_sdr_measures
 
-    # Define Training Schedule
-    # Store some constants
+    # Dummy sampler for counting the number of batches
+    if training_args.dynamic_batch_size_map is not None:
+        sampler = DynamicSizeBatchSampler(
+            lengths=vectorized_datasets["train"]["target_length"],
+            batch_size_map=training_args.dynamic_batch_size_map,
+        )
+
     per_device_train_batch_size = int(training_args.per_device_train_batch_size)
     train_batch_size = per_device_train_batch_size * accelerator.num_processes
     gradient_accumulation_steps = int(training_args.gradient_accumulation_steps)
@@ -790,7 +795,10 @@ def main():
 
     if training_args.max_steps < 0:
         num_epochs = int(training_args.num_train_epochs)
-        steps_per_epoch = len(vectorized_datasets["train"]) // (train_batch_size * gradient_accumulation_steps)
+        if training_args.dynamic_batch_size_map is not None:
+            steps_per_epoch = len(sampler) // gradient_accumulation_steps
+        else:
+            steps_per_epoch = len(vectorized_datasets["train"]) // (train_batch_size * gradient_accumulation_steps)
         total_train_steps = steps_per_epoch * num_epochs
     elif training_args.max_steps > 0:
         logger.info("max_steps is given, it will override any value given in num_train_epochs")
@@ -854,16 +862,19 @@ def main():
     # accelerator get the batch size from the dummy_data_loader
     model, optimizer, lr_scheduler, _ = accelerator.prepare(model, optimizer, lr_scheduler, dummy_data_loader)
 
-    num_examples = total_train_steps * train_batch_size * gradient_accumulation_steps
+    num_examples = len(vectorized_datasets["train"])
     logger.info("***** Running training *****")
     logger.info(f"  Training examples = {len(vectorized_datasets['train'])}")
     logger.info(f"  Eval examples = {len(vectorized_datasets['eval'])}")
     logger.info(f"  Num examples = {num_examples}")
-    logger.info("  Instantaneous batch size per device =" f" {per_device_train_batch_size}")
     logger.info("  Gradient accumulation steps =" f" {gradient_accumulation_steps}")
-    logger.info(
-        f"  Total train batch size (w. parallel & distributed) = {train_batch_size * gradient_accumulation_steps}"
-    )
+    if training_args.dynamic_batch_size_map is not None:
+        logger.info(f"  Num batches (w. dynamic batch size) = {len(sampler)}")
+    else:
+        logger.info("  Instantaneous batch size per device =" f" {per_device_train_batch_size}")
+        logger.info(
+            f"  Total train batch size (w. parallel & distributed) = {train_batch_size * gradient_accumulation_steps}"
+        )
     logger.info(f"  Total optimization steps = {total_train_steps}")
 
     # ======================== Training ================================
@@ -1077,17 +1088,31 @@ def main():
         with accelerator.main_process_first():
             vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
         sampler = None
-        if training_args.group_by_length:
-            sampler = LengthGroupedSampler(train_batch_size, lengths=vectorized_datasets["train"]["target_length"])
-        train_dataloader = DataLoader(
-            vectorized_datasets["train"],
-            collate_fn=data_collator,
-            batch_size=per_device_train_batch_size,
-            sampler=sampler,
-            shuffle=not training_args.group_by_length,
-            num_workers=training_args.dataloader_num_workers,
-            pin_memory=training_args.dataloader_pin_memory,
-        )
+        if training_args.dynamic_batch_size_map is not None:
+            sampler = DynamicSizeBatchSampler(
+                lengths=vectorized_datasets["train"]["target_length"],
+                batch_size_map=training_args.dynamic_batch_size_map,
+            )
+            train_dataloader = DataLoader(
+                vectorized_datasets["train"],
+                collate_fn=data_collator,
+                batch_sampler=sampler,
+                shuffle=False,
+                num_workers=training_args.dataloader_num_workers,
+                pin_memory=training_args.dataloader_pin_memory,
+            )
+        else:
+            if training_args.group_by_length:
+                sampler = LengthGroupedSampler(train_batch_size, lengths=vectorized_datasets["train"]["target_length"])
+            train_dataloader = DataLoader(
+                vectorized_datasets["train"],
+                collate_fn=data_collator,
+                batch_size=per_device_train_batch_size,
+                sampler=sampler,
+                shuffle=not training_args.group_by_length,
+                num_workers=training_args.dataloader_num_workers,
+                pin_memory=training_args.dataloader_pin_memory,
+            )
         train_dataloader = accelerator.prepare(train_dataloader)
         if hasattr(train_dataloader, "dataset") and isinstance(train_dataloader.dataset, IterableDataset):
             train_dataloader.dataset.set_epoch(epoch)

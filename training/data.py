@@ -10,6 +10,7 @@ from accelerate import Accelerator
 from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset, Audio, load_from_disk
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoTokenizer
+from torch.utils.data import Sampler
 
 
 @dataclass
@@ -119,6 +120,33 @@ class DataCollatorParlerTTSWithPadding:
             batch["prompt_attention_mask"] = prompt_input_ids["attention_mask"]
 
         return batch
+
+
+class DynamicSizeBatchSampler(Sampler):
+    def __init__(self, lengths, batch_size_map):
+        self.lengths = lengths
+        self.batch_size_map = sorted(batch_size_map, key=lambda x: x[1])
+        self.batches = self._create_batches()
+
+    def _create_batches(self):
+        indices = sorted(range(len(self.lengths)), key=lambda x: self.lengths[x])
+        batches = []
+        for batch_size, max_len in self.batch_size_map:
+            batch = []
+            for idx in indices:
+                if self.lengths[idx] <= max_len:
+                    batch.append(idx)
+                    if len(batch) == batch_size:
+                        batches.append(batch)
+                        batch = []
+            indices = [idx for idx in indices if self.lengths[idx] > max_len]
+        return batches
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
 
 
 def convert_dataset_str_to_list(

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Annotated
 
 from transformers import Seq2SeqTrainingArguments
 
@@ -402,4 +402,8 @@ class ParlerTTSTrainingArguments(Seq2SeqTrainingArguments):
     codebook_weights: Optional[List[float]] = field(
         default=None,
         metadata={"help": "Weights applied to each codebook."},
+    )
+    dynamic_batch_size_map: Optional[Annotated[List[int], 3]] = field(
+        default_factory=lambda: None,
+        metadata={"help": "Dynamic batch size map."},
     )
