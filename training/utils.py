@@ -8,6 +8,7 @@ from typing import Dict, List
 import torch
 from datasets import concatenate_datasets, load_from_disk, load_dataset
 from datasets.exceptions import DatasetNotFoundError
+from datasets.data_files import EmptyDatasetError
 from wandb import Audio
 
 
@@ -115,7 +116,7 @@ def get_last_codec_checkpoint_step(folder, split, temporary_save_to_hf=None) -> 
     if temporary_save_to_hf is not None:
         try:
             ds = load_dataset(temporary_save_to_hf)
-        except DatasetNotFoundError:
+        except (DatasetNotFoundError, EmptyDatasetError):
             return 0
         checkpoints_sorted = sorted(filter(lambda checkpoint: checkpoint.startswith(split), list(ds.keys())), key=lambda checkpoint: int(_RE_CODEC_CHECKPOINT.search(re.sub(split + "_", "", checkpoint)).groups()[0]))
         if len(checkpoints_sorted) == 0:
