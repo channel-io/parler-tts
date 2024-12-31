@@ -1035,6 +1035,7 @@ class ParlerTTSDecoderLayer(nn.Module):
 
         # Cross-Attention Block
         cross_attn_weights = None
+        # print("encoder_hidden_states", encoder_hidden_states)
         if encoder_hidden_states is not None:
             residual = hidden_states
             hidden_states = self.encoder_attn_layer_norm(hidden_states)
@@ -3652,12 +3653,15 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             or generation_config.pad_token_id in output_ids
             or generation_config.eos_token_id in output_ids
         )
+        # print("decode_sequentially", decode_sequentially)
+        # print(output_ids)
         if not decode_sequentially:
             output_values = self.audio_encoder.decode(
                 audio_codes=output_ids,
                 **audio_decode_kwargs,
             ).audio_values.squeeze(1)
             output_lengths = [audio.shape[0] for audio in output_values]
+            # print(output_values)
         else:
             output_values = []
             for sample_id in range(batch_size):

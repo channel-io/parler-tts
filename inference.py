@@ -1,47 +1,27 @@
-# import torch
-# from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSConfig
-# from transformers import AutoTokenizer
-# import soundfile as sf
-
-# device = "cuda:2" if torch.cuda.is_available() else "cpu"
-
-# model_path = "/home/work/channel/dobby/TTS/modules/parler-tts/output_dir_training"
-# tokenizer_path = "/home/work/channel/dobby/TTS/modules/parler-tts/output_dir_training"
-
-# model = ParlerTTSForConditionalGeneration.from_pretrained(model_path).to(device)
-# tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-
-# # prompt = "[male] [20s] 안녕하세요. 잘 부탁드려요."
-# prompt = "안녕하세요 일찍 출근하시네요"
-# description = None
-
-# # input_ids = tokenizer(description, return_tensors="pt").input_ids.to(device)
-# input_ids = None
-# prompt_input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-
-# generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_input_ids)
-# audio_arr = generation.cpu().numpy().squeeze()
-# # model.config.sampling_rate = 8000
-# sf.write("parler_tts_out.wav", audio_arr, model.config.sampling_rate)
-
-
 import torch
-from parler_tts import ParlerTTSForConditionalGeneration
+from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSConfig
 from transformers import AutoTokenizer
 import soundfile as sf
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device = "cuda:2" if torch.cuda.is_available() else "cpu"
 
-model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1").to(device)
-tokenizer = AutoTokenizer.from_pretrained("parler-tts/parler-tts-mini-v1")
+model_path = "/home/work/channel/dobby/TTS/modules/parler-tts/output_dir_training"
+tokenizer_path = "/home/work/channel/dobby/TTS/modules/parler-tts/output_dir_training"
 
-prompt = "Hey, how are you doing today?"
-# description = "A female speaker delivers a slightly expressive and animated speech with a moderate speed and pitch. The recording is of very high quality, with the speaker's voice sounding clear and very close up."
+model = ParlerTTSForConditionalGeneration.from_pretrained(model_path).to(device)
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+# prompt = "[male] [20s] 안녕하세요. 잘 부탁드려요."
+prompt = "[male] [20s] 화면에 보이시는 워크플로우 좀 캡처 해주시겠어요?"
+description = None
 
 # input_ids = tokenizer(description, return_tensors="pt").input_ids.to(device)
 input_ids = None
 prompt_input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+print(prompt_input_ids)
+print(tokenizer.decode(prompt_input_ids[0]))
 
 generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_input_ids)
 audio_arr = generation.cpu().numpy().squeeze()
-sf.write("parler_tts_out.wav", audio_arr, 8000)
+# model.config.sampling_rate = 8000
+sf.write("parler_tts_out.wav", audio_arr, model.config.sampling_rate)

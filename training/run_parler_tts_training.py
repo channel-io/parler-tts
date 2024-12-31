@@ -271,8 +271,12 @@ def main():
     # assume that the dataset has been saved to `save_to_disk` if the latter is not empty
     dataset_was_precomputed = len(os.listdir(data_args.save_to_disk)) > 0
     if dataset_was_precomputed:
+        logger.info("load from disk")
         with accelerator.main_process_first():
             vectorized_datasets = datasets.load_from_disk(data_args.save_to_disk)
+        vectorized_datasets["train"] = vectorized_datasets["train"].select(range(500000))
+        vectorized_datasets["eval"] = vectorized_datasets["eval"].select(range(30))
+        
     else:
         raw_datasets = DatasetDict()
 

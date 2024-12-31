@@ -11,4 +11,4 @@ export NCCL_TIMEOUT=10000000
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # --config_file ./helpers/multinode/accelerate_config_with_ds.yaml \
-accelerate launch --config_file ./helpers/multinode/multinode_with_ds.yaml ./training/run_parler_tts_training.py --args_yaml sharded_args.yaml
+accelerate launch --config_file ./helpers/multinode/multinode_with_ds.yaml ./training/run_parler_tts_training.py --args_yaml sharding_args.yaml
