@@ -56,15 +56,15 @@ def shard_and_process(dataset, dataset_name, split, output_dir, shard_size):
 train_dataset_names = config['train_dataset_name'].split('+')
 train_split_names = config['train_split_name'].split('+')
 
-# total_train_examples = 0
-# for train_dataset_name, train_split_name in zip(train_dataset_names, train_split_names):
-#     print(f"Processing train dataset: {train_dataset_name} with split: {train_split_name}")
-#     try:
-#         train_dataset = load_dataset(train_dataset_name, split=train_split_name)
-#     except ValueError:
-#         train_dataset = load_from_disk(train_dataset_name)
-#         train_dataset = train_dataset[train_split_name]
-#     total_train_examples += shard_and_process(train_dataset, train_dataset_name, "train", output_dir, shard_size)
+total_train_examples = 0
+for train_dataset_name, train_split_name in zip(train_dataset_names, train_split_names):
+    print(f"Processing train dataset: {train_dataset_name} with split: {train_split_name}")
+    try:
+        train_dataset = load_dataset(train_dataset_name, split=train_split_name)
+    except ValueError:
+        train_dataset = load_from_disk(train_dataset_name)
+        train_dataset = train_dataset[train_split_name]
+    total_train_examples += shard_and_process(train_dataset, train_dataset_name, "train", output_dir, shard_size)
 
 # Process eval datasets
 eval_dataset_names = config['eval_dataset_name'].split('+')
@@ -81,5 +81,5 @@ for eval_dataset_name, eval_split_name in zip(eval_dataset_names, eval_split_nam
     total_eval_examples += shard_and_process(eval_dataset, eval_dataset_name, "eval", output_dir, shard_size)
 
 # Print the number of examples in each dataset
-# print(f"Number of training examples: {total_train_examples}")
+print(f"Number of training examples: {total_train_examples}")
 print(f"Number of evaluation examples: {total_eval_examples}")
