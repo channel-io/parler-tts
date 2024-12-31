@@ -1,3 +1,4 @@
+import os
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union
@@ -6,7 +7,7 @@ import datasets
 import numpy as np
 import torch
 from accelerate import Accelerator
-from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset, Audio
+from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset, Audio, load_from_disk
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoTokenizer
 from torch.utils.data import Sampler
@@ -87,17 +88,23 @@ class DataCollatorParlerTTSWithPadding:
                 labels, pad=(0, 0, 0, max(self.audio_max_length - labels.shape[1], 0)), value=-100
             )
 
-        input_ids = [{"input_ids": feature["input_ids"]} for feature in features]
+        if "input_ids" in features[0]:
+            input_ids = [{"input_ids": feature["input_ids"]} for feature in features]
+        else:
+            input_ids = None
 
-        input_ids = self.description_tokenizer.pad(
-            input_ids,
-            return_tensors="pt",
-            padding=self.padding,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            max_length=self.description_max_length,
-        )
+        if input_ids is not None:
+            input_ids = self.description_tokenizer.pad(
+                input_ids,
+                return_tensors="pt",
+                padding=self.padding,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                max_length=self.description_max_length,
+            )
 
-        batch = {"labels": labels, **input_ids}
+            batch = {"labels": labels, **input_ids}
+        else:
+            batch = {"labels": labels, "input_ids": None, "attention_mask": None}
 
         prompt_input_ids = [{"input_ids": feature["prompt_input_ids"]} for feature in features]
         prompt_input_ids = self.prompt_tokenizer.pad(
@@ -234,31 +241,87 @@ def load_multiple_datasets(
         probabilities = np.array(dataset_samples) / np.sum(dataset_samples)
     else:
         probabilities = None
+        
+    if streaming and 'num_proc' in kwargs:
+        # kwargs['num_workers'] = kwargs['num_proc']
+        del kwargs['num_proc']
 
     all_datasets = []
+    sharded = kwargs.get('sharded', False)
     # iterate over the datasets we want to interleave
     for dataset_dict in tqdm(dataset_names_dict, desc="Combining datasets..."):
-        with accelerator.local_main_process_first():
-            dataset = load_dataset(
-                dataset_dict["name"],
-                dataset_dict["config"],
-                split=dataset_dict["split"],
-                streaming=streaming,
-                **kwargs,
-            )
+        with accelerator.main_process_first():
+            if sharded:
+                logger.info(f"Sharded dataset: {dataset_dict['name']}")
+                dataset = []
+                shards = os.listdir(dataset_dict["name"])
+                for shard in shards:
+                    dataset.append(load_from_disk(
+                        os.path.join(dataset_dict["name"], shard),
+                    ))
+                dataset = concatenate_datasets(dataset)
+            else:
+                dataset = load_dataset(
+                    dataset_dict["name"],
+                    dataset_dict["config"],
+                    split=dataset_dict["split"],
+                    streaming=streaming,
+                    **kwargs,
+                )
+            logger.info(f"Loaded dataset: {dataset}")
+            # dataset = dataset.shuffle(seed=42)
+            # min_samples = min(1000, len(dataset))
+            # dataset = dataset.select(range(max(min_samples, int(len(dataset) * 0.5))))
             
             dataset_features = dataset.features.keys()
             
             # Check if 'audio' column is a string and convert it to an array
+            # if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
+            #     # Cast the 'audio' column to Audio feature
+            #     dataset = dataset.cast_column("audio", Audio())
+            cache_dir = "/home/work/channel/cache_directory"
+            cache_file_name = os.path.join(cache_dir, "cached_dataset.arrow")
+            os.makedirs(cache_dir, exist_ok=True)
+            num_proc = 32
             if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
-                # Cast the 'audio' column to Audio feature
-                dataset = dataset.cast_column("audio", Audio())
+                import soundfile as sf
+                import librosa
 
-            if 'audio' in dataset.column_names:
-                print("First item in 'audio' column:", dataset[0]['audio'])
+                def process_audio(batch):
+                    results = {audio_column_name: [], "sampling_rate": [], "duration": []}
+                    for path in batch["audio"]:
+                        try:
+                            array, sr = sf.read(path)
+                            duration = len(array) / sr
+                            if sr != sampling_rate:
+                                array = librosa.resample(array, orig_sr=sr, target_sr=sampling_rate)
+                            results[audio_column_name].append({"array": array})
+                            results["sampling_rate"].append(sampling_rate)
+                            results["duration"].append(duration)
+                        except Exception:
+                            results[audio_column_name].append({"array": None})
+                            results["sampling_rate"].append(None)
+                            results["duration"].append(None)
+                    return results
+
+                dataset = dataset.map(
+                    process_audio,
+                    num_proc=num_proc,
+                    batched=True,
+                    batch_size=16,
+                    writer_batch_size=10,
+                    cache_file_name=cache_file_name,
+                    desc="Loading audio"
+                )
+                
+                dataset = dataset.filter(lambda example: example[audio_column_name]['array'] is not None, num_proc=num_proc, writer_batch_size=10)
+
+            # if 'audio' in dataset.column_names:
+            #     print("First item in 'audio' column:", dataset[0]['audio'])
             
-            if sampling_rate is not None and audio_column_name is not None:
+            if isinstance(dataset[0]['audio'], str) and sampling_rate is not None and audio_column_name is not None:
                 # resample target audio
+                logger.info(f"Resampling audio to {sampling_rate} Hz")
                 dataset = dataset.cast_column(audio_column_name, datasets.features.Audio(sampling_rate=sampling_rate))
 
             metadata_dataset_name = dataset_dict["metadata_dataset_name"]
@@ -331,6 +394,7 @@ def load_multiple_datasets(
                         )
 
                 dataset_features = dataset.features.keys()
+            logger.info(f"Dataset features: {dataset_features}")
             # else:
             #     def add_none_description(sample):
             #         sample['description'] = None
@@ -339,7 +403,9 @@ def load_multiple_datasets(
             #     dataset = dataset.map(add_none_description, num_proc=15, desc="Adding None Description")
 
             if columns_to_keep is not None:
+                logger.info(f"Removing columns: {set(dataset_features - columns_to_keep)}")
                 dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))
+                
         all_datasets.append(dataset)
 
     if len(all_datasets) == 1:

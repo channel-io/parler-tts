@@ -22,7 +22,12 @@ import re
 import sys
 import time
 import math
+import shutil
+import yaml
+import random
+import mlflow
 import contextlib
+import soundfile as sf
 from multiprocess import set_start_method
 from datetime import timedelta
 import inspect
@@ -74,6 +79,31 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
+    
+    args_yaml = None
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith("--args_yaml"):
+            args_yaml = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+            del sys.argv[i:i + 2]
+            break
+        
+    default_args = []
+    if args_yaml is not None and os.path.isfile(args_yaml):
+        with open(args_yaml) as f:
+            default_configs = yaml.load(f, Loader=yaml.FullLoader)
+        default_args = []
+        for k, v in default_configs.items():
+            if isinstance(v, str) and v.startswith("$"):
+                v = os.environ.get(v[1:], None)
+            default_args.append(f"--{k}")
+            if isinstance(v, list):
+                for sub_v in v:
+                    sub_v = str(sub_v)
+                    default_args.append(sub_v)
+            else:
+                v = str(v)
+                default_args.append(v)
+        default_args.extend(sys.argv[1:])
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, ParlerTTSTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -81,7 +111,7 @@ def main():
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses(args=default_args)
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -109,7 +139,7 @@ def main():
     padding = "max_length" if data_args.pad_to_max_length else "longest"
 
     ####### A. Preparation
-    kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(minutes=120)), DistributedDataParallelKwargs(find_unused_parameters=False)]
+    kwargs_handlers = [InitProcessGroupKwargs(timeout=timedelta(minutes=10000000)), DistributedDataParallelKwargs(find_unused_parameters=True)]
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         mixed_precision=mixed_precision,
@@ -241,18 +271,26 @@ def main():
     # assume that the dataset has been saved to `save_to_disk` if the latter is not empty
     dataset_was_precomputed = len(os.listdir(data_args.save_to_disk)) > 0
     if dataset_was_precomputed:
-        with accelerator.local_main_process_first():
+        logger.info("load from disk")
+        with accelerator.main_process_first():
             vectorized_datasets = datasets.load_from_disk(data_args.save_to_disk)
+        vectorized_datasets["train"] = vectorized_datasets["train"].select(range(500000))
+        vectorized_datasets["eval"] = vectorized_datasets["eval"].select(range(30))
+        
     else:
         raw_datasets = DatasetDict()
 
         columns_to_keep = {
             "target_audio_column_name": data_args.target_audio_column_name,
             "prompt_column_name": data_args.prompt_column_name,
+            "speaker": "speaker",
+            "gender": "gender",
+            "age": "age",
         }
         if data_args.description_column_name is not None:
             columns_to_keep["description_column_name"] = data_args.description_column_name
 
+        print("streaming", data_args.streaming)
         if training_args.do_train:
             raw_datasets["train"] = load_multiple_datasets(
                 accelerator,
@@ -270,7 +308,8 @@ def main():
                 audio_column_name=data_args.target_audio_column_name,
                 sampling_rate=sampling_rate,
                 logger=logger,
-                # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
+                streaming=data_args.streaming, # TODO(SG): optionally enable streaming mode
+                sharded=data_args.sharded,
             )
 
             for key in columns_to_keep:
@@ -306,7 +345,7 @@ def main():
             )
 
             if data_args.max_eval_samples is not None:
-                with accelerator.local_main_process_first():
+                with accelerator.main_process_first():
                     raw_datasets["eval"] = (
                         raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
                     )
@@ -349,6 +388,9 @@ def main():
         trust_remote_code=data_args.trust_remote_code,
         attn_implementation={"decoder": model_args.attn_implementation, "text_encoder": "eager"},
     )
+    
+    # print("** model **")
+    # print(model)
 
     # enable gradient checkpointing if necessary
     if training_args.gradient_checkpointing:
@@ -388,7 +430,7 @@ def main():
     if not dataset_was_precomputed:
         # Filter on text length
         if description_column_name is not None and data_args.max_text_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 raw_datasets = raw_datasets.filter(
                     lambda x: len(x) < data_args.max_text_length,
@@ -398,19 +440,34 @@ def main():
 
         # Preprocessing the dataset.
         # We need to tokenize the texts.
-        def pass_through_processors(prompt, description=None):
+        def pass_through_processors(prompt, speaker=None, gender=None, age=None, description=None):
             batch = {}
+            
+            # print(f"speaker: {speaker}, gender: {gender}, age: {age}")
 
             if description is not None:
                 batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
                 
-            batch["prompt_input_ids"] = prompt_tokenizer(prompt.strip())["input_ids"]
+            prefix = ""
+            if gender is not None:
+                prefix += gender
+            if age is not None:
+                prefix += ' ' + age
+            prefix = prefix.strip()
+            
+            if prefix != "":
+                batch["prompt_input_ids"] = prompt_tokenizer(f"{prefix} {prompt.strip()}")["input_ids"]
+            else:
+                batch["prompt_input_ids"] = prompt_tokenizer(f"{prompt.strip()}")["input_ids"]
+            
+            # print('with meta', prompt_tokenizer(f"{speaker} {gender} {age} {prompt.strip()}")["input_ids"])
+            # print('original', prompt_tokenizer(prompt.strip())["input_ids"])
 
             return batch
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # this is a trick to avoid to rewrite the entire audio column which takes ages
-            input_columns = [description_column_name, prompt_column_name] if description_column_name is not None else [prompt_column_name]
+            input_columns = [description_column_name, prompt_column_name, 'speaker', 'gender', 'age'] if description_column_name is not None else [prompt_column_name, 'speaker', 'gender', 'age']
             vectorized_datasets = raw_datasets.map(
                 pass_through_processors,
                 remove_columns=next(iter(raw_datasets.values())).column_names,
@@ -526,6 +583,7 @@ def main():
                     generate_labels = apply_audio_decoder(batch)
                     generate_labels = accelerator.pad_across_processes(generate_labels, dim=1, pad_index=0)
                     generate_labels = accelerator.gather_for_metrics(generate_labels)
+                    accelerator.wait_for_everyone()
 
                     if accelerator.is_main_process:
                         lab = generate_labels["labels"].cpu().transpose(1, 2).to(torch.int16)
@@ -570,7 +628,7 @@ def main():
             del all_generated_labels
             accelerator.wait_for_everyone()
 
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 tmp_labels = load_all_codec_checkpoints(os.path.join(data_args.temporary_save_to_disk, split)).select(
                     range(len(vectorized_datasets[split]))
                 )
@@ -580,7 +638,7 @@ def main():
         accelerator.free_memory()
         del generate_labels, all_lens
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # NOTE: filtering is done at the end because in the `datasets` library, caching audio files is done after most operations
             # caching audio files is time and disk-space consuming, so we want to avoid it at all costs, especially for large (>1Kh) audio datasets.
             # That's also why we avoid to concat the processed datasets (vectorized_datasets) with the audio column present in raw_datasets.
@@ -596,7 +654,7 @@ def main():
             )
 
         if description_column_name is not None and data_args.max_description_token_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 vectorized_datasets = vectorized_datasets.filter(
                     lambda x: len(x) < data_args.max_description_token_length,
@@ -605,7 +663,7 @@ def main():
                 )
 
         if data_args.max_prompt_token_length is not None:
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 # filter description that is shorter than max_text_length
                 vectorized_datasets = vectorized_datasets.filter(
                     lambda x: len(x) < data_args.max_prompt_token_length,
@@ -625,7 +683,7 @@ def main():
     audio_max_length = None
     if padding == "max_length":
         audio_max_length = max(vectorized_datasets["train"]["target_length"])
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             max_sample = vectorized_datasets["train"].filter(
                 lambda x: x == audio_max_length,
                 num_proc=num_workers,
@@ -634,7 +692,7 @@ def main():
         audio_max_length = max([len(l[0]) for l in max_sample["labels"]])
 
     if description_column_name is not None and data_args.max_description_token_length is not None:
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # filter description that is shorter than max_text_length
             vectorized_datasets = vectorized_datasets.filter(
                 lambda x: len(x) < data_args.max_description_token_length,
@@ -643,7 +701,7 @@ def main():
             )
 
     if data_args.max_prompt_token_length is not None:
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             # filter description that is shorter than max_text_length
             vectorized_datasets = vectorized_datasets.filter(
                 lambda x: len(x) < data_args.max_prompt_token_length,
@@ -653,14 +711,15 @@ def main():
 
     if training_args.group_by_length:
         # apply a simple heuristic to take into account audio and text lengths
-        def add_target_lengths(target_length, prompt, description):
+        def add_target_lengths(target_length, prompt, description=[]):
             return {"target_length": target_length + len(prompt) + len(description)}
 
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
+            input_columns=["target_length", "prompt_input_ids", "input_ids"] if description_column_name is not None else ["target_length", "prompt_input_ids"]
             vectorized_datasets = vectorized_datasets.map(
                 add_target_lengths,
                 num_proc=num_workers,
-                input_columns=["target_length", "prompt_input_ids", "input_ids"],
+                input_columns=input_columns,
             )
 
     # for large datasets it is advised to run the preprocessing on a
@@ -790,11 +849,23 @@ def main():
         audio_max_length=audio_max_length,
     )
 
+    dummy_data_loader = DataLoader(
+        vectorized_datasets["train"],
+        collate_fn=data_collator,
+        batch_size=per_device_train_batch_size,
+        sampler=None,
+        shuffle=not training_args.group_by_length,
+        num_workers=training_args.dataloader_num_workers,
+        pin_memory=training_args.dataloader_pin_memory,
+    )
     # Prepare everything with accelerate
-    model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
+    # accelerator get the batch size from the dummy_data_loader
+    model, optimizer, lr_scheduler, _ = accelerator.prepare(model, optimizer, lr_scheduler, dummy_data_loader)
 
     num_examples = len(vectorized_datasets["train"])
     logger.info("***** Running training *****")
+    logger.info(f"  Training examples = {len(vectorized_datasets['train'])}")
+    logger.info(f"  Eval examples = {len(vectorized_datasets['eval'])}")
     logger.info(f"  Num examples = {num_examples}")
     logger.info("  Gradient accumulation steps =" f" {gradient_accumulation_steps}")
     if training_args.dynamic_batch_size_map is not None:
@@ -875,7 +946,7 @@ def main():
         steps_trained_progress_bar.update(cur_step)
 
         for epoch in range(0, epochs_trained):
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
 
         if training_args.max_steps < 0:
@@ -886,7 +957,7 @@ def main():
             # So we just shuffle the dataset one extra time and start from a fresh epoch
             # This is "good enough" for our purposes but not fully correct
             resume_step = None
-            with accelerator.local_main_process_first():
+            with accelerator.main_process_first():
                 vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
     else:
         resume_step = None
@@ -1014,7 +1085,7 @@ def main():
 
     total_batched_samples = resume_step if resume_step is not None else 0
     for epoch in range(epochs_trained, num_epochs):
-        with accelerator.local_main_process_first():
+        with accelerator.main_process_first():
             vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
         sampler = None
         if training_args.dynamic_batch_size_map is not None:
@@ -1073,15 +1144,20 @@ def main():
             # get num items in batch - if different than BOS and than -100
             num_items_in_batch = sum([(batch["labels"].ne(audio_encoder_bos_token_id) | batch["labels"].ne(-100) | batch["labels"].ne(audio_encoder_eos_token_id)).sum((0,1))[0] for batch in batch_samples])
             num_items_in_batch = accelerator.gather(num_items_in_batch).sum().item()
+            accelerator.wait_for_everyone()
             
             # losses = []
             for i,batch in enumerate(batch_samples):
                 total_batched_samples += 1
-                ctx = model.no_sync if (i < len(batch_samples) - 1 and accelerator.num_processes > 1) else contextlib.nullcontext
+                # ctx = model.no_sync if (i < len(batch_samples) - 1 and accelerator.num_processes > 1) else contextlib.nullcontext
                 
-                with ctx():
+                with contextlib.nullcontext():
                     loss, train_metric = train_step(batch, accelerator, autocast_kwargs, num_items_in_batch, gradient_accumulation_steps)
                     accelerator.backward(loss)
+                    
+                # with ctx():
+                #     loss, train_metric = train_step(batch, accelerator, autocast_kwargs, num_items_in_batch, gradient_accumulation_steps)
+                #     accelerator.backward(loss)
                     # losses.append(loss.detach())
             
             grad_norm = accelerator.clip_grad_norm_(model.parameters(), training_args.max_grad_norm)
@@ -1111,6 +1187,7 @@ def main():
                     epoch=epoch,
                     prefix="train",
                 )
+                accelerator.wait_for_everyone()
 
             # save checkpoint and weights after each save_steps and at the end of training
             if (cur_step % training_args.save_steps == 0) or cur_step == total_train_steps:
@@ -1170,6 +1247,7 @@ def main():
                     # Model forward
                     eval_metric = eval_step(batch, accelerator, autocast_kwargs)
                     eval_metric = accelerator.gather_for_metrics(eval_metric)
+                    accelerator.wait_for_everyone()
                     eval_metric = {key: val.unsqueeze(0) if val.ndim == 0 else val for (key,val) in eval_metric.items()}
                     eval_metrics.append(eval_metric)
 
@@ -1191,16 +1269,52 @@ def main():
                         disable=not accelerator.is_local_main_process,
                     ):
                         generated_audios = generate_step(batch, accelerator)
-                        # Gather all predictions and targets
-                        generated_audios, input_ids, prompts = accelerator.pad_across_processes(
-                            (generated_audios, batch["input_ids"], batch["prompt_input_ids"]), dim=1, pad_index=0
-                        )
-                        generated_audios, input_ids, prompts = accelerator.gather_for_metrics(
-                            (generated_audios, input_ids, prompts)
-                        )
-                        eval_preds.extend(generated_audios.to("cpu"))
-                        eval_descriptions.extend(input_ids.to("cpu"))
-                        eval_prompts.extend(prompts.to("cpu"))
+                        if config.use_text_encoder:   
+                            # Gather all predictions and targets
+                            generated_audios, input_ids, prompts = accelerator.pad_across_processes(
+                                (generated_audios, batch["input_ids"], batch["prompt_input_ids"]), dim=1, pad_index=0
+                            )
+                            generated_audios, input_ids, prompts = accelerator.gather_for_metrics(
+                                (generated_audios, input_ids, prompts)
+                            )
+                            accelerator.wait_for_everyone()
+                            eval_preds.extend(generated_audios.to("cpu"))
+                            eval_descriptions.extend(input_ids.to("cpu"))
+                            eval_prompts.extend(prompts.to("cpu"))
+                        else:
+                            # Gather all predictions and targets
+                            generated_audios, prompts = accelerator.pad_across_processes(
+                                (generated_audios, batch["prompt_input_ids"]), dim=1, pad_index=0
+                            )
+                            generated_audios, prompts = accelerator.gather_for_metrics(
+                                (generated_audios, prompts)
+                            )
+                            accelerator.wait_for_everyone()
+                            eval_preds.extend(generated_audios.to("cpu"))
+                            eval_prompts.extend(prompts.to("cpu"))
+                            
+                    # Assuming tracker is from accelerator.get_tracker("mlflow", unwrap=True)
+                    if accelerator.is_main_process:
+                        os.makedirs('./tmp', exist_ok=True)
+                        random_audio_idxs = random.sample(list(range(len(eval_preds))), 10)
+                        for idx in random_audio_idxs:
+                            if torch_dtype == torch.bfloat16:
+                                audio = eval_preds[idx].to(torch.float32).cpu().numpy()  # Convert to float32 before converting to NumPy
+                            else:
+                                audio = eval_preds[idx].cpu().numpy()  # Direct conversion for other types
+                            prompt = prompt_tokenizer.decode(eval_prompts[idx], skip_special_tokens=True)
+        
+                            sample_rate = 8000
+                            sf.write(f"tmp/{idx}_audio.wav", audio, sample_rate)
+                            print(prompt)
+                            with open(f"tmp/{idx}_prompt.txt", "w", encoding="utf-8") as f:
+                                f.write(prompt)
+
+                            # Log artifacts using MLflow directly
+                            mlflow.log_artifact(f"tmp/{idx}_audio.wav", artifact_path=f"{cur_step}_steps_audio_samples")
+                            mlflow.log_artifact(f"tmp/{idx}_prompt.txt", artifact_path=f"{cur_step}_steps_audio_prompts")
+                        shutil.rmtree('./tmp', ignore_errors=True)
+                    accelerator.wait_for_everyone()
 
                 eval_time = time.time() - eval_start
                 # normalize eval metrics
@@ -1210,39 +1324,39 @@ def main():
 
                 # compute metrics
                 metrics_desc = ""
-                if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
-                    if accelerator.is_local_main_process:
-                        (
-                            metric_values,
-                            pred_descriptions,
-                            pred_prompts,
-                            audios,
-                            transcriptions,
-                            si_sdr_measures,
-                        ) = compute_metrics(
-                            eval_preds,
-                            eval_descriptions,
-                            eval_prompts,
-                            accelerator.device,
-                            training_args.compute_clap_similarity_metric,
-                            training_args.compute_noise_level_metric,
-                            training_args.noise_level_to_compute_clean_wer,
-                        )
-                        eval_metrics.update(metric_values)
-                        metrics_desc = " ".join([f"Eval {key}: {value} |" for key, value in metric_values.items()])
-                        if "wandb" in training_args.report_to:
-                            log_pred(
-                                accelerator,
-                                pred_descriptions,
-                                pred_prompts,
-                                transcriptions,
-                                audios,
-                                si_sdr_measures,
-                                sampling_rate=sampling_rate,
-                                step=cur_step,
-                                prefix="eval",
-                            )
-                    accelerator.wait_for_everyone()
+                # if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
+                #     if accelerator.is_local_main_process:
+                #         (
+                #             metric_values,
+                #             pred_descriptions,
+                #             pred_prompts,
+                #             audios,
+                #             transcriptions,
+                #             si_sdr_measures,
+                #         ) = compute_metrics(
+                #             eval_preds,
+                #             eval_descriptions,
+                #             eval_prompts,
+                #             accelerator.device,
+                #             training_args.compute_clap_similarity_metric,
+                #             training_args.compute_noise_level_metric,
+                #             training_args.noise_level_to_compute_clean_wer,
+                #         )
+                #         eval_metrics.update(metric_values)
+                #         metrics_desc = " ".join([f"Eval {key}: {value} |" for key, value in metric_values.items()])
+                #         if "wandb" in training_args.report_to:
+                #             log_pred(
+                #                 accelerator,
+                #                 pred_descriptions,
+                #                 pred_prompts,
+                #                 transcriptions,
+                #                 audios,
+                #                 si_sdr_measures,
+                #                 sampling_rate=sampling_rate,
+                #                 step=cur_step,
+                #                 prefix="eval",
+                #             )
+                #     accelerator.wait_for_everyone()
 
                 # Print metrics and update progress bar
                 if accelerator.is_local_main_process:
@@ -1259,14 +1373,19 @@ def main():
                     epoch=epoch,
                     prefix="eval",
                 )
+                accelerator.wait_for_everyone()
 
                 # release eval batch and relax metrics
                 eval_metrics, eval_preds, eval_descriptions, eval_prompts, batch, eval_metric = release_memory(
                     eval_metrics, eval_preds, eval_descriptions, eval_prompts, batch, eval_metric
                 )
                 if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
-                    generated_audios, input_ids, prompts = release_memory(generated_audios, input_ids, prompts)
+                    if config.use_text_encoder: 
+                        generated_audios, input_ids, prompts = release_memory(generated_audios, input_ids, prompts)
+                    else:
+                        generated_audios, prompts = release_memory(generated_audios, prompts)
 
+                accelerator.wait_for_everyone()
                 # train mode
                 model.train()
 
@@ -1285,4 +1404,5 @@ def main():
 
 
 if __name__ == "__main__":
+    logger.info(f"PDSH_RCMD_TYPE: {os.getenv('PDSH_RCMD_TYPE')}")
     main()

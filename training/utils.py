@@ -129,6 +129,8 @@ def log_metric(
     """Helper function to log all training/evaluation metrics with the correct prefixes and styling."""
     log_metrics = {}
     for k, v in metrics.items():
+        if isinstance(v, torch.Tensor) and v.numel() == 1:
+            v = v.item()
         if "codebook" in k:
             log_metrics[f"codebook_{prefix}/{k}"] = v
         else:

@@ -1035,6 +1035,7 @@ class ParlerTTSDecoderLayer(nn.Module):
 
         # Cross-Attention Block
         cross_attn_weights = None
+        # print("encoder_hidden_states", encoder_hidden_states)
         if encoder_hidden_states is not None:
             residual = hidden_states
             hidden_states = self.encoder_attn_layer_norm(hidden_states)
@@ -2342,13 +2343,13 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         # initialize with config
         super().__init__(config)
 
-        if config.use_text_encoder and text_encoder is None:
+        if getattr(config, "use_text_encoder", True) and text_encoder is None:
             from transformers.models.auto.modeling_auto import AutoModelForTextEncoding
 
             text_encoder = AutoModelForTextEncoding.from_config(config.text_encoder)
             
 
-        if config.use_audio_encoder and audio_encoder is None:
+        if getattr(config, "use_audio_encoder", True) and audio_encoder is None:
             from transformers.models.auto.modeling_auto import AutoModel
 
             audio_encoder = AutoModel.from_config(config.audio_encoder)
@@ -2360,12 +2361,12 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         self.audio_encoder = audio_encoder
         self.decoder = decoder
 
-        if config.use_text_encoder and self.text_encoder.config.to_dict() != self.config.text_encoder.to_dict():
+        if getattr(config, "use_text_encoder", True) and self.text_encoder.config.to_dict() != self.config.text_encoder.to_dict():
             logger.warning(
                 f"Config of the text_encoder: {self.text_encoder.__class__} is overwritten by shared text_encoder config:"
                 f" {self.config.text_encoder}"
             )
-        if config.use_audio_encoder and self.audio_encoder.config.to_dict() != self.config.audio_encoder.to_dict():
+        if getattr(config, "use_audio_encoder", True) and self.audio_encoder.config.to_dict() != self.config.audio_encoder.to_dict():
             logger.warning(
                 f"Config of the audio_encoder: {self.audio_encoder.__class__} is overwritten by shared audio_encoder config:"
                 f" {self.config.audio_encoder}"
@@ -2378,16 +2379,16 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
 
         # make sure that the individual model's config refers to the shared config
         # so that the updates to the config will be synced
-        if config.use_text_encoder:
+        if getattr(config, "use_text_encoder", True):
             self.config.text_encoder._attn_implementation = self.text_encoder.config._attn_implementation
             self.text_encoder.config = self.config.text_encoder
-        if config.use_audio_encoder:
+        if getattr(config, "use_audio_encoder", True):
             self.config.audio_encoder._attn_implementation = self.audio_encoder.config._attn_implementation
             self.audio_encoder.config = self.config.audio_encoder
         self.config.decoder._attn_implementation = self.decoder.config._attn_implementation
         self.decoder.config = self.config.decoder
 
-        if config.use_text_encoder:
+        if getattr(config, "use_text_encoder", True):
         # text encoder outputs might need to be projected to different dimension for decoder
             if (
                 self.text_encoder.config.hidden_size != self.decoder.config.hidden_size
@@ -2405,7 +2406,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
                 config.decoder.hidden_size,
             )
 
-        if config.use_text_encoder and self.text_encoder.get_output_embeddings() is not None:
+        if getattr(config, "use_text_encoder", True) and self.text_encoder.get_output_embeddings() is not None:
             raise ValueError(
                 f"The encoder {self.text_encoder} should not have a LM Head. Please use a model without and LM Head"
             )
@@ -2416,7 +2417,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
                 "The selected decoder is not prepared for the encoder hidden states to be passed. Please see the "
                 "following discussion on GitHub: https://github.com/huggingface/transformers/issues/23350"
             )
-        if config.use_audio_encoder:
+        if getattr(config, "use_audio_encoder", True):
             audio_encoder_signature = set(inspect.signature(self.audio_encoder.decode).parameters.keys())
             self.use_audio_scales = "audio_scales" in audio_encoder_signature
 
@@ -2441,7 +2442,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
 
     def tie_weights(self):
         # tie text encoder & decoder if needed
-        if self.config.use_text_encoder and self.config.tie_encoder_decoder:
+        if getattr(self.config, "use_text_encoder", True) and self.config.tie_encoder_decoder:
             # tie text encoder and decoder base model
             decoder_base_model_prefix = self.decoder.base_model_prefix
             self._tie_encoder_decoder_weights(
@@ -2449,13 +2450,13 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             )
 
     def get_audio_encoder(self):
-        if self.config.use_audio_encoder:
+        if getattr(self.config, "use_audio_encoder", True):
             return self.audio_encoder
         else:
             return None
 
     def get_text_encoder(self):
-        if self.config.use_text_encoder:
+        if getattr(self.config, "use_text_encoder", True):
             return self.text_encoder
         else:
             return None
@@ -2797,7 +2798,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             if prompt_input_ids is not None:
                 prompt_hidden_states = self.embed_prompts(prompt_input_ids)
 
-        if self.config.use_text_encoder and encoder_outputs is None:
+        if getattr(self.config, "use_text_encoder", True) and encoder_outputs is None:
             encoder_outputs = self.text_encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -2846,7 +2847,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         elif isinstance(encoder_outputs, tuple):
             encoder_outputs = BaseModelOutput(*encoder_outputs)
 
-        encoder_hidden_states = encoder_outputs.last_hidden_state
+        encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs is not None else None
 
         if (labels is not None) and (decoder_input_ids is None and decoder_inputs_embeds is None):
             decoder_input_ids = shift_tokens_right(
@@ -2904,9 +2905,9 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state if encoder_outputs is not None else None,
+            encoder_hidden_states=encoder_outputs.hidden_states if encoder_outputs is not None else None,
+            encoder_attentions=encoder_outputs.attentions if encoder_outputs is not None else None,
             per_codebook_losses=decoder_outputs.per_codebook_losses,
         )
 
@@ -3083,6 +3084,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         model_input_name: Optional[str],
         generation_config: GenerationConfig,
     ) -> Dict[str, Any]:
+        if not getattr(self.config, "use_text_encoder", True):
+            return model_kwargs
         # 1. get text encoder
         encoder = self.get_text_encoder()
         # Compatibility with Accelerate big model inference: we need the encoder to outputs stuff on the same device
@@ -3340,13 +3343,13 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
         return self._cache
 
     def freeze_encoders(self, freeze_text_encoder=True):
-        if self.config.use_text_encoder:
+        if getattr(self.config, "use_text_encoder", True):
             if freeze_text_encoder:
                 for param in self.text_encoder.parameters():
                     param.requires_grad = False
                 self.text_encoder._requires_grad = False
 
-        if self.config.use_audio_encoder:
+        if getattr(self.config, "use_audio_encoder", True):
             for param in self.audio_encoder.parameters():
                 param.requires_grad = False
             self.audio_encoder._requires_grad = False
@@ -3650,12 +3653,15 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel):
             or generation_config.pad_token_id in output_ids
             or generation_config.eos_token_id in output_ids
         )
+        # print("decode_sequentially", decode_sequentially)
+        # print(output_ids)
         if not decode_sequentially:
             output_values = self.audio_encoder.decode(
                 audio_codes=output_ids,
                 **audio_decode_kwargs,
             ).audio_values.squeeze(1)
             output_lengths = [audio.shape[0] for audio in output_values]
+            # print(output_values)
         else:
             output_values = []
             for sample_id in range(batch_size):

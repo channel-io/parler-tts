@@ -35,8 +35,12 @@ _extras_dev_deps = [
 _extras_training_deps = [
     "jiwer",
     "wandb",
-    "accelerate",
+    "datasets",
+    "wandb",
+    "mlflow",
     "evaluate",
+    "deepspeed==0.15.1",
+    "accelerate==0.34.2",
     "datasets[audio]>=2.14.5",
 ]
 
