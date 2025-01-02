@@ -1,0 +1,79 @@
+
+{
+    "model_name_or_path": "/mnt/work/cyan/models/parler-tts-untrained-600M",
+    "save_to_disk":  "./tmp_dataset_audio_009/",
+    "temporary_save_to_disk": "./audio_code_tmp_009/",
+    "mlflow_project": "cyan-parler-debug",
+
+    "preprocessing_only": true,
+
+    "feature_extractor_name":"/mnt/work/cyan/models/dac_44khZ_8kbps",
+    "description_tokenizer_name":"google/flan-t5-large",
+    "prompt_tokenizer_name":"/mnt/work/cyan/models/parler-tts-untrained-600M",
+
+    "report_to": ["mlflow"],
+    "overwrite_output_dir": true,
+    "output_dir": "./output_dir_training_009",
+
+    "train_dataset_name": "/mnt/work/tts/130/unzip/009.한국인대화음성/metadata",
+    "train_metadata_dataset_name": null,
+    "train_dataset_config_name": "default",
+    "train_split_name": "train",
+
+    "eval_dataset_name": "/mnt/work/tts/130/unzip/009.한국인대화음성/metadata",
+    "eval_metadata_dataset_name": null,
+    "eval_dataset_config_name": "default",
+    "eval_split_name": "validation",
+
+    "target_audio_column_name": "audio", 
+    "description_column_name": null,
+    "prompt_column_name": "transcription",
+
+    "max_eval_samples": 16,
+    
+    "max_duration_in_seconds": 30,
+    "min_duration_in_seconds": 2.0,
+    "max_text_length": 600,
+
+    "group_by_length": true,
+
+    "add_audio_samples_to_wandb": true,
+    "id_column_name": "id",
+
+    "preprocessing_num_workers": 32,
+
+    "do_train": true,
+    "num_train_epochs": 2,
+    "gradient_accumulation_steps": 8,
+    "gradient_checkpointing": false,
+    "per_device_train_batch_size": 3,
+    "learning_rate": 0.0001,
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.99,
+    "weight_decay": 0.01,
+
+    "lr_scheduler_type": "cosine",
+    "warmup_steps":  20,
+
+
+    "logging_steps": 10,
+    "freeze_text_encoder": true,
+
+
+    "do_eval": true, 
+    "predict_with_generate": true,
+    "include_inputs_for_metrics": true,
+    "evaluation_strategy": "steps",
+    "save_strategy": "steps",
+    "eval_steps": 100,
+    "save_steps": 100,
+
+    "per_device_eval_batch_size": 2,
+
+    "audio_encoder_per_device_batch_size":16,
+    "dtype": "bfloat16",
+    "seed": 456,
+
+    "dataloader_num_workers":0,
+    "attn_implementation": "sdpa"
+}

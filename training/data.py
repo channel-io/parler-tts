@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset, Audio, load_from_disk
+from datasets.exceptions import DatasetGenerationError
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoTokenizer
 from torch.utils.data import Sampler
@@ -247,20 +248,10 @@ def load_multiple_datasets(
         del kwargs['num_proc']
 
     all_datasets = []
-    sharded = kwargs.get('sharded', False)
     # iterate over the datasets we want to interleave
     for dataset_dict in tqdm(dataset_names_dict, desc="Combining datasets..."):
         with accelerator.main_process_first():
-            if sharded:
-                logger.info(f"Sharded dataset: {dataset_dict['name']}")
-                dataset = []
-                shards = os.listdir(dataset_dict["name"])
-                for shard in shards:
-                    dataset.append(load_from_disk(
-                        os.path.join(dataset_dict["name"], shard),
-                    ))
-                dataset = concatenate_datasets(dataset)
-            else:
+            try:
                 dataset = load_dataset(
                     dataset_dict["name"],
                     dataset_dict["config"],
@@ -268,57 +259,18 @@ def load_multiple_datasets(
                     streaming=streaming,
                     **kwargs,
                 )
+            except (ValueError, DatasetGenerationError):
+                dataset = load_from_disk(
+                    dataset_dict["name"],
+                )
+                dataset = dataset[dataset_dict["split"]]
             logger.info(f"Loaded dataset: {dataset}")
             # dataset = dataset.shuffle(seed=42)
             # min_samples = min(1000, len(dataset))
             # dataset = dataset.select(range(max(min_samples, int(len(dataset) * 0.5))))
             
             dataset_features = dataset.features.keys()
-            
-            # Check if 'audio' column is a string and convert it to an array
-            # if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
-            #     # Cast the 'audio' column to Audio feature
-            #     dataset = dataset.cast_column("audio", Audio())
-            cache_dir = "/home/work/channel/cache_directory"
-            cache_file_name = os.path.join(cache_dir, "cached_dataset.arrow")
-            os.makedirs(cache_dir, exist_ok=True)
-            num_proc = 32
-            if 'audio' in dataset.column_names and isinstance(dataset[0]['audio'], str):
-                import soundfile as sf
-                import librosa
 
-                def process_audio(batch):
-                    results = {audio_column_name: [], "sampling_rate": [], "duration": []}
-                    for path in batch["audio"]:
-                        try:
-                            array, sr = sf.read(path)
-                            duration = len(array) / sr
-                            if sr != sampling_rate:
-                                array = librosa.resample(array, orig_sr=sr, target_sr=sampling_rate)
-                            results[audio_column_name].append({"array": array})
-                            results["sampling_rate"].append(sampling_rate)
-                            results["duration"].append(duration)
-                        except Exception:
-                            results[audio_column_name].append({"array": None})
-                            results["sampling_rate"].append(None)
-                            results["duration"].append(None)
-                    return results
-
-                dataset = dataset.map(
-                    process_audio,
-                    num_proc=num_proc,
-                    batched=True,
-                    batch_size=16,
-                    writer_batch_size=10,
-                    cache_file_name=cache_file_name,
-                    desc="Loading audio"
-                )
-                
-                dataset = dataset.filter(lambda example: example[audio_column_name]['array'] is not None, num_proc=num_proc, writer_batch_size=10)
-
-            # if 'audio' in dataset.column_names:
-            #     print("First item in 'audio' column:", dataset[0]['audio'])
-            
             if isinstance(dataset[0]['audio'], str) and sampling_rate is not None and audio_column_name is not None:
                 # resample target audio
                 logger.info(f"Resampling audio to {sampling_rate} Hz")

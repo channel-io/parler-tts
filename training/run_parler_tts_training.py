@@ -312,10 +312,12 @@ def main():
                 sharded=data_args.sharded,
             )
 
-            for key in columns_to_keep:
-                if columns_to_keep[key] not in raw_datasets["train"].column_names:
+            columns_to_keep = {k: v for k, v in columns_to_keep.items() if v in raw_datasets["train"].column_names}
+
+            for key in [data_args.target_audio_column_name, data_args.prompt_column_name]:
+                if key not in raw_datasets["train"].column_names:
                     raise ValueError(
-                        f"--{key} '{columns_to_keep[key]}' not found in dataset '{data_args.train_dataset_name}'."
+                        f"--{key} '{key}' not found in dataset '{data_args.train_dataset_name}'."
                         f" Make sure to set `--{key}` to the correct audio column - one of"
                         f" {', '.join(raw_datasets['train'].column_names)}."
                     )
@@ -344,7 +346,8 @@ def main():
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
 
-            if data_args.max_eval_samples is not None:
+            if not data_args.preprocessing_only and data_args.max_eval_samples is not None:
+            # if data_args.max_eval_samples is not None:
                 with accelerator.main_process_first():
                     raw_datasets["eval"] = (
                         raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
@@ -463,11 +466,20 @@ def main():
             # print('with meta', prompt_tokenizer(f"{speaker} {gender} {age} {prompt.strip()}")["input_ids"])
             # print('original', prompt_tokenizer(prompt.strip())["input_ids"])
 
+            batch.update({
+                "speaker": speaker,
+                "gender": gender,
+                "age": age,
+            })
+
             return batch
 
         with accelerator.main_process_first():
             # this is a trick to avoid to rewrite the entire audio column which takes ages
-            input_columns = [description_column_name, prompt_column_name, 'speaker', 'gender', 'age'] if description_column_name is not None else [prompt_column_name, 'speaker', 'gender', 'age']
+            input_columns = [description_column_name, prompt_column_name] if description_column_name is not None else [prompt_column_name]
+            for k in ["speaker", "gender", "age"]:
+                if k in next(iter(raw_datasets.values())).column_names:
+                    input_columns.append(k)
             vectorized_datasets = raw_datasets.map(
                 pass_through_processors,
                 remove_columns=next(iter(raw_datasets.values())).column_names,
