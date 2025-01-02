@@ -1,8 +1,8 @@
 
 {
     "model_name_or_path": "/mnt/work/cyan/models/parler-tts-untrained-600M",
-    "save_to_disk":  "./tmp_dataset_audio_009/",
-    "temporary_save_to_disk": "./audio_code_tmp_009/",
+    "save_to_disk":  "/mnt/work/tts/130/unzip/009.한국인대화음성/tmp_dataset_audio_009",
+    "temporary_save_to_disk": "/mnt/work/tts/130/unzip/009.한국인대화음성/audio_code_tmp_009",
     "mlflow_project": "cyan-parler-debug",
 
     "preprocessing_only": true,

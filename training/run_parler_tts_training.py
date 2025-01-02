@@ -452,11 +452,11 @@ def main():
                 batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
                 
             prefix = ""
-            if gender is not None:
-                prefix += gender
-            if age is not None:
-                prefix += ' ' + age
-            prefix = prefix.strip()
+            # if gender is not None:
+            #     prefix += gender
+            # if age is not None:
+            #     prefix += ' ' + age
+            # prefix = prefix.strip()
             
             if prefix != "":
                 batch["prompt_input_ids"] = prompt_tokenizer(f"{prefix} {prompt.strip()}")["input_ids"]
